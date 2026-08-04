@@ -91,7 +91,7 @@ local function getScreenGui()
 	return gui
 end
 
--- Global Tooltip Manager (Iris Feature)
+-- Global Tooltip Manager
 local TooltipFrame = Instance.new("TextLabel")
 TooltipFrame.Name = "ImGuiTooltip"
 TooltipFrame.Size = UDim2.new(0, 0, 0, 18)
@@ -225,7 +225,6 @@ local function buildLabel(container, text)
 	return Label
 end
 
--- Separator Metni Artık Kesin Olarak En Solda
 local function buildSeparator(container, text)
 	local Row = Instance.new("Frame")
 	Row.Size = UDim2.new(1, 0, 0, text and 18 or 8)
@@ -273,6 +272,8 @@ local function buildButton(container, text, callback)
 	Btn.Font = Theme.Font
 	Btn.TextSize = 12
 	Btn.TextColor3 = Theme.Text
+	Btn.Active = true
+	Btn.Selectable = true
 	Btn.Parent = container
 	stroke(Btn, Theme.Border)
 
@@ -280,7 +281,13 @@ local function buildButton(container, text, callback)
 	Btn.MouseLeave:Connect(function() Btn.BackgroundColor3 = Theme.Element end)
 	Btn.MouseButton1Down:Connect(function() Btn.BackgroundColor3 = Theme.ElementActive end)
 	Btn.MouseButton1Up:Connect(function() Btn.BackgroundColor3 = Theme.ElementHover end)
-	Btn.MouseButton1Click:Connect(function() if callback then callback() end end)
+
+	local function fire()
+		if callback then callback() end
+	end
+	Btn.Activated:Connect(fire)
+	Btn.MouseButton1Click:Connect(fire)
+
 	return Btn
 end
 
@@ -292,6 +299,7 @@ local function buildCheckbox(container, text, default, callback, flag)
 	Holder.BackgroundTransparency = 1
 	Holder.Text = ""
 	Holder.AutoButtonColor = false
+	Holder.Active = true
 	Holder.Parent = container
 
 	local Box = Instance.new("Frame")
@@ -320,7 +328,10 @@ local function buildCheckbox(container, text, default, callback, flag)
 		if fromUser then pushAutoSave() end
 	end
 
-	Holder.MouseButton1Click:Connect(function() setState(not state, true) end)
+	local function toggle() setState(not state, true) end
+	Holder.Activated:Connect(toggle)
+	Holder.MouseButton1Click:Connect(toggle)
+
 	registerFlag(flag, {Get = function() return state end, Set = function(v) setState(v, false) end})
 	if callback then callback(state) end
 
@@ -451,13 +462,16 @@ local function buildKeybind(container, text, default, callback, flag)
 	KeyBtn.Font = Theme.Font
 	KeyBtn.TextSize = 11
 	KeyBtn.TextColor3 = Theme.Accent
+	KeyBtn.Active = true
 	KeyBtn.Parent = Holder
 	stroke(KeyBtn, Theme.Border)
 
-	KeyBtn.MouseButton1Click:Connect(function()
+	local function startListen()
 		listening = true
 		KeyBtn.Text = "..."
-	end)
+	end
+	KeyBtn.Activated:Connect(startListen)
+	KeyBtn.MouseButton1Click:Connect(startListen)
 
 	local conn
 	conn = UIS.InputBegan:Connect(function(input, gpe)
@@ -533,7 +547,6 @@ local function buildProgressBar(container, text, min, max, default, format)
 	}
 end
 
--- Colorpicker: Dynamic ZIndex Fix Added
 local function buildColorpicker(container, text, default, callback, flag)
 	local color = default or Color3.fromRGB(255, 255, 255)
 	local open = false
@@ -560,6 +573,7 @@ local function buildColorpicker(container, text, default, callback, flag)
 	PreviewBtn.BackgroundColor3 = color
 	PreviewBtn.BorderSizePixel = 0
 	PreviewBtn.Text = ""
+	PreviewBtn.Active = true
 	PreviewBtn.Parent = Holder
 	stroke(PreviewBtn, Theme.Border)
 
@@ -636,11 +650,13 @@ local function buildColorpicker(container, text, default, callback, flag)
 	bind(gTrack, function(v) g = v end)
 	bind(bTrack, function(v) b = v end)
 
-	PreviewBtn.MouseButton1Click:Connect(function()
+	local function togglePanel()
 		open = not open
 		Panel.Visible = open
 		Holder.ZIndex = open and 100 or 1
-	end)
+	end
+	PreviewBtn.Activated:Connect(togglePanel)
+	PreviewBtn.MouseButton1Click:Connect(togglePanel)
 
 	registerFlag(flag, {
 		Get = function() return {r = color.R, g = color.G, b = color.B} end,
@@ -657,7 +673,6 @@ local function buildColorpicker(container, text, default, callback, flag)
 	end}
 end
 
--- MultiDropdown: Dynamic ZIndex Fix Added
 local function buildMultiDropdown(container, text, options, defaults, callback, flag)
 	local selected = {}
 	for _, v in ipairs(defaults or {}) do selected[v] = true end
@@ -679,6 +694,7 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	Btn.TextSize = 12
 	Btn.TextColor3 = Theme.Text
 	Btn.TextXAlignment = Enum.TextXAlignment.Left
+	Btn.Active = true
 	Btn.Parent = Holder
 	stroke(Btn, Theme.Border)
 
@@ -722,30 +738,35 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 			OptBtn.TextColor3 = Theme.Text
 			OptBtn.TextXAlignment = Enum.TextXAlignment.Left
 			OptBtn.ZIndex = 101
+			OptBtn.Active = true
 			OptBtn.Parent = ListHolder
 
 			local OPad = Instance.new("UIPadding")
 			OPad.PaddingLeft = UDim.new(0, 6)
 			OPad.Parent = OptBtn
 
-			OptBtn.MouseButton1Click:Connect(function()
+			local function selectToggle()
 				selected[opt] = not selected[opt] or nil
 				OptBtn.BackgroundColor3 = selected[opt] and Theme.Accent or Theme.Element
 				refreshLabel()
 				if callback then callback(selected) end
 				pushAutoSave()
-			end)
+			end
+			OptBtn.Activated:Connect(selectToggle)
+			OptBtn.MouseButton1Click:Connect(selectToggle)
 		end
 	end
 
 	build()
 	refreshLabel()
 
-	Btn.MouseButton1Click:Connect(function()
+	local function toggleOpen()
 		open = not open
 		ListHolder.Visible = open
 		Holder.ZIndex = open and 100 or 1
-	end)
+	end
+	Btn.Activated:Connect(toggleOpen)
+	Btn.MouseButton1Click:Connect(toggleOpen)
 
 	registerFlag(flag, {
 		Get = function() return selected end,
@@ -767,7 +788,6 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	}
 end
 
--- Dropdown: Dynamic ZIndex Fix Added
 local function buildDropdown(container, text, options, default, callback, flag)
 	local selected = default or options[1]
 	local open = false
@@ -788,6 +808,7 @@ local function buildDropdown(container, text, options, default, callback, flag)
 	Btn.TextSize = 12
 	Btn.TextColor3 = Theme.Text
 	Btn.TextXAlignment = Enum.TextXAlignment.Left
+	Btn.Active = true
 	Btn.Parent = Holder
 	stroke(Btn, Theme.Border)
 
@@ -833,6 +854,7 @@ local function buildDropdown(container, text, options, default, callback, flag)
 			OptBtn.TextColor3 = Theme.Text
 			OptBtn.TextXAlignment = Enum.TextXAlignment.Left
 			OptBtn.ZIndex = 101
+			OptBtn.Active = true
 			OptBtn.Parent = ListHolder
 
 			local OPad = Instance.new("UIPadding")
@@ -841,17 +863,22 @@ local function buildDropdown(container, text, options, default, callback, flag)
 
 			OptBtn.MouseEnter:Connect(function() OptBtn.BackgroundColor3 = Theme.Accent end)
 			OptBtn.MouseLeave:Connect(function() OptBtn.BackgroundColor3 = Theme.Element end)
-			OptBtn.MouseButton1Click:Connect(function() selectOption(opt, true) end)
+
+			local function doSelect() selectOption(opt, true) end
+			OptBtn.Activated:Connect(doSelect)
+			OptBtn.MouseButton1Click:Connect(doSelect)
 		end
 	end
 
 	build()
 
-	Btn.MouseButton1Click:Connect(function()
+	local function toggleOpen()
 		open = not open
 		ListHolder.Visible = open
 		Holder.ZIndex = open and 100 or 1
-	end)
+	end
+	Btn.Activated:Connect(toggleOpen)
+	Btn.MouseButton1Click:Connect(toggleOpen)
 
 	registerFlag(flag, {Get = function() return selected end, Set = function(v) selectOption(v, false) end})
 	if callback then callback(selected) end
@@ -867,7 +894,6 @@ local function buildDropdown(container, text, options, default, callback, flag)
 	}
 end
 
--- NEW IRIS FEATURE: Selectable List Item
 local function buildSelectable(container, text, defaultSelected, callback)
 	local state = defaultSelected or false
 
@@ -880,6 +906,7 @@ local function buildSelectable(container, text, defaultSelected, callback)
 	Btn.TextSize = 12
 	Btn.TextColor3 = Theme.Text
 	Btn.TextXAlignment = Enum.TextXAlignment.Left
+	Btn.Active = true
 	Btn.Parent = container
 
 	local Pad = Instance.new("UIPadding")
@@ -892,11 +919,14 @@ local function buildSelectable(container, text, defaultSelected, callback)
 	Btn.MouseLeave:Connect(function()
 		Btn.BackgroundColor3 = state and Theme.Accent or Theme.Element
 	end)
-	Btn.MouseButton1Click:Connect(function()
+
+	local function toggle()
 		state = not state
 		Btn.BackgroundColor3 = state and Theme.Accent or Theme.Element
 		if callback then callback(state) end
-	end)
+	end
+	Btn.Activated:Connect(toggle)
+	Btn.MouseButton1Click:Connect(toggle)
 
 	return {
 		Set = function(v)
@@ -907,7 +937,6 @@ local function buildSelectable(container, text, defaultSelected, callback)
 	}
 end
 
--- NEW IRIS FEATURE: Radio Button
 local function buildRadioButton(container, text, active, callback)
 	local state = active or false
 
@@ -916,6 +945,7 @@ local function buildRadioButton(container, text, active, callback)
 	Holder.BackgroundTransparency = 1
 	Holder.Text = ""
 	Holder.AutoButtonColor = false
+	Holder.Active = true
 	Holder.Parent = container
 
 	local Outer = Instance.new("Frame")
@@ -951,9 +981,9 @@ local function buildRadioButton(container, text, active, callback)
 		if callback then callback(state) end
 	end
 
-	Holder.MouseButton1Click:Connect(function()
-		setState(not state)
-	end)
+	local function toggle() setState(not state) end
+	Holder.Activated:Connect(toggle)
+	Holder.MouseButton1Click:Connect(toggle)
 
 	return { Set = setState, Get = function() return state end }
 end
@@ -985,6 +1015,7 @@ local function buildSectionHeader(container, title, opts)
 	Header.BorderSizePixel = 0
 	Header.Text = ""
 	Header.AutoButtonColor = false
+	Header.Active = true
 	Header.Parent = SectionFrame
 	stroke(Header, Theme.Border)
 
@@ -1032,11 +1063,13 @@ local function buildSectionHeader(container, title, opts)
 	ContentLayout.Padding = UDim.new(0, 4)
 	ContentLayout.Parent = Content
 
-	Header.MouseButton1Click:Connect(function()
+	local function toggleSection()
 		collapsed = not collapsed
 		Content.Visible = not collapsed
 		Arrow.Text = collapsed and "▶" or "▼"
-	end)
+	end
+	Header.Activated:Connect(toggleSection)
+	Header.MouseButton1Click:Connect(toggleSection)
 
 	return Content
 end
@@ -1060,6 +1093,7 @@ local function buildTree(container, title)
 	Header.Size = UDim2.new(1, 0, 0, 18)
 	Header.BackgroundTransparency = 1
 	Header.Text = ""
+	Header.Active = true
 	Header.Parent = TreeFrame
 
 	local HeaderLayout = Instance.new("UIListLayout")
@@ -1104,11 +1138,13 @@ local function buildTree(container, title)
 	ContentLayout.Padding = UDim.new(0, 4)
 	ContentLayout.Parent = Content
 
-	Header.MouseButton1Click:Connect(function()
+	local function toggleTree()
 		collapsed = not collapsed
 		Content.Visible = not collapsed
 		Arrow.Text = collapsed and "▶" or "▼"
-	end)
+	end
+	Header.Activated:Connect(toggleTree)
+	Header.MouseButton1Click:Connect(toggleTree)
 
 	return Content
 end
@@ -1265,6 +1301,7 @@ function Library:CreateWindow(title, pos, size)
 	CollapseBtn.Font = Theme.Font
 	CollapseBtn.TextSize = 11
 	CollapseBtn.TextColor3 = Theme.Text
+	CollapseBtn.Active = true
 	CollapseBtn.Parent = TitleBar
 
 	local TitleLabel = Instance.new("TextLabel")
@@ -1306,7 +1343,7 @@ function Library:CreateWindow(title, pos, size)
 	Pages.Parent = Body
 
 	local fullSize = Main.Size
-	CollapseBtn.MouseButton1Click:Connect(function()
+	local function toggleCollapse()
 		Window.Collapsed = not Window.Collapsed
 		if Window.Collapsed then
 			CollapseBtn.Text = "▶"
@@ -1315,7 +1352,9 @@ function Library:CreateWindow(title, pos, size)
 			CollapseBtn.Text = "▼"
 			TS:Create(Main, TweenInfo.new(0.15), {Size = fullSize}):Play()
 		end
-	end)
+	end
+	CollapseBtn.Activated:Connect(toggleCollapse)
+	CollapseBtn.MouseButton1Click:Connect(toggleCollapse)
 
 	makeDraggable(TitleBar, Main)
 
@@ -1370,6 +1409,7 @@ function Library:CreateWindow(title, pos, size)
 		TabBtn.Font = Theme.Font
 		TabBtn.TextSize = 11
 		TabBtn.TextColor3 = Theme.SubText
+		TabBtn.Active = true
 		TabBtn.Parent = Tabs
 		stroke(TabBtn, Theme.Border)
 
@@ -1406,6 +1446,7 @@ function Library:CreateWindow(title, pos, size)
 			TabBtn.TextColor3 = Theme.Text
 		end
 
+		TabBtn.Activated:Connect(select)
 		TabBtn.MouseButton1Click:Connect(select)
 
 		local Category = buildScope(Page)
@@ -1433,6 +1474,7 @@ function Library:CreateWindow(title, pos, size)
 	return Window
 end
 
+-- Config Tab With Auto-Load Feature Included
 function Library:CreateConfigTab(Window, categoryName)
 	local Category = Window:AddCategory(categoryName or "Settings")
 	Category:AddLabel("Config Manager")
@@ -1445,6 +1487,17 @@ function Library:CreateConfigTab(Window, categoryName)
 	end
 
 	local configDropdown = Category:AddDropdown("Saved Configs", getConfigList(), nil, nil, nil)
+
+	local autoLoadFile = Library.ConfigFolder .. "/autoload.txt"
+	local function getAutoLoadName()
+		if hasFileApi() and isfile(autoLoadFile) then
+			local content = readfile(autoLoadFile)
+			if content and #content > 0 then return content end
+		end
+		return "None"
+	end
+
+	local autoLoadLabel = Category:AddLabel("Auto Load Config: " .. getAutoLoadName())
 
 	Category:AddButton("Save Config", function()
 		local name = nameBox.Get()
@@ -1465,14 +1518,41 @@ function Library:CreateConfigTab(Window, categoryName)
 		local path = Library.ConfigFolder .. "/" .. name .. ".json"
 		if isfile(path) then
 			delfile(path)
+			if getAutoLoadName() == name then
+				delfile(autoLoadFile)
+				autoLoadLabel.Text = "Auto Load Config: None"
+			end
 			configDropdown.Refresh(getConfigList())
 		end
+	end)
+
+	Category:AddButton("Set Auto Load Config", function()
+		local name = configDropdown.Get()
+		if name == "None" or not hasFileApi() then return end
+		ensureFolder()
+		writefile(autoLoadFile, name)
+		autoLoadLabel.Text = "Auto Load Config: " .. name
+	end)
+
+	Category:AddButton("Clear Auto Load Config", function()
+		if hasFileApi() and isfile(autoLoadFile) then
+			delfile(autoLoadFile)
+		end
+		autoLoadLabel.Text = "Auto Load Config: None"
 	end)
 
 	Category:AddCheckbox("Auto Save", Library.AutoSaveEnabled, function(v)
 		local name = configDropdown.Get()
 		Library:SetAutoSave(v, name ~= "None" and name or nil)
 	end)
+
+	-- Auto load file execution on startup
+	if hasFileApi() and isfile(autoLoadFile) then
+		local autoName = readfile(autoLoadFile)
+		if autoName and autoName ~= "" and isfile(Library.ConfigFolder .. "/" .. autoName .. ".json") then
+			Library:LoadConfig(autoName)
+		end
+	end
 
 	return Category
 end
