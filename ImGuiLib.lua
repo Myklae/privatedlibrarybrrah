@@ -272,8 +272,6 @@ local function buildButton(container, text, callback)
 	Btn.Font = Theme.Font
 	Btn.TextSize = 12
 	Btn.TextColor3 = Theme.Text
-	Btn.Active = true
-	Btn.Selectable = true
 	Btn.Parent = container
 	stroke(Btn, Theme.Border)
 
@@ -282,11 +280,9 @@ local function buildButton(container, text, callback)
 	Btn.MouseButton1Down:Connect(function() Btn.BackgroundColor3 = Theme.ElementActive end)
 	Btn.MouseButton1Up:Connect(function() Btn.BackgroundColor3 = Theme.ElementHover end)
 
-	local function fire()
+	Btn.MouseButton1Click:Connect(function()
 		if callback then callback() end
-	end
-	Btn.Activated:Connect(fire)
-	Btn.MouseButton1Click:Connect(fire)
+	end)
 
 	return Btn
 end
@@ -299,7 +295,6 @@ local function buildCheckbox(container, text, default, callback, flag)
 	Holder.BackgroundTransparency = 1
 	Holder.Text = ""
 	Holder.AutoButtonColor = false
-	Holder.Active = true
 	Holder.Parent = container
 
 	local Box = Instance.new("Frame")
@@ -328,9 +323,9 @@ local function buildCheckbox(container, text, default, callback, flag)
 		if fromUser then pushAutoSave() end
 	end
 
-	local function toggle() setState(not state, true) end
-	Holder.Activated:Connect(toggle)
-	Holder.MouseButton1Click:Connect(toggle)
+	Holder.MouseButton1Click:Connect(function()
+		setState(not state, true)
+	end)
 
 	registerFlag(flag, {Get = function() return state end, Set = function(v) setState(v, false) end})
 	if callback then callback(state) end
@@ -462,16 +457,13 @@ local function buildKeybind(container, text, default, callback, flag)
 	KeyBtn.Font = Theme.Font
 	KeyBtn.TextSize = 11
 	KeyBtn.TextColor3 = Theme.Accent
-	KeyBtn.Active = true
 	KeyBtn.Parent = Holder
 	stroke(KeyBtn, Theme.Border)
 
-	local function startListen()
+	KeyBtn.MouseButton1Click:Connect(function()
 		listening = true
 		KeyBtn.Text = "..."
-	end
-	KeyBtn.Activated:Connect(startListen)
-	KeyBtn.MouseButton1Click:Connect(startListen)
+	end)
 
 	local conn
 	conn = UIS.InputBegan:Connect(function(input, gpe)
@@ -573,7 +565,6 @@ local function buildColorpicker(container, text, default, callback, flag)
 	PreviewBtn.BackgroundColor3 = color
 	PreviewBtn.BorderSizePixel = 0
 	PreviewBtn.Text = ""
-	PreviewBtn.Active = true
 	PreviewBtn.Parent = Holder
 	stroke(PreviewBtn, Theme.Border)
 
@@ -650,13 +641,11 @@ local function buildColorpicker(container, text, default, callback, flag)
 	bind(gTrack, function(v) g = v end)
 	bind(bTrack, function(v) b = v end)
 
-	local function togglePanel()
+	PreviewBtn.MouseButton1Click:Connect(function()
 		open = not open
 		Panel.Visible = open
 		Holder.ZIndex = open and 100 or 1
-	end
-	PreviewBtn.Activated:Connect(togglePanel)
-	PreviewBtn.MouseButton1Click:Connect(togglePanel)
+	end)
 
 	registerFlag(flag, {
 		Get = function() return {r = color.R, g = color.G, b = color.B} end,
@@ -694,7 +683,6 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	Btn.TextSize = 12
 	Btn.TextColor3 = Theme.Text
 	Btn.TextXAlignment = Enum.TextXAlignment.Left
-	Btn.Active = true
 	Btn.Parent = Holder
 	stroke(Btn, Theme.Border)
 
@@ -738,35 +726,30 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 			OptBtn.TextColor3 = Theme.Text
 			OptBtn.TextXAlignment = Enum.TextXAlignment.Left
 			OptBtn.ZIndex = 101
-			OptBtn.Active = true
 			OptBtn.Parent = ListHolder
 
 			local OPad = Instance.new("UIPadding")
 			OPad.PaddingLeft = UDim.new(0, 6)
 			OPad.Parent = OptBtn
 
-			local function selectToggle()
+			OptBtn.MouseButton1Click:Connect(function()
 				selected[opt] = not selected[opt] or nil
 				OptBtn.BackgroundColor3 = selected[opt] and Theme.Accent or Theme.Element
 				refreshLabel()
 				if callback then callback(selected) end
 				pushAutoSave()
-			end
-			OptBtn.Activated:Connect(selectToggle)
-			OptBtn.MouseButton1Click:Connect(selectToggle)
+			end)
 		end
 	end
 
 	build()
 	refreshLabel()
 
-	local function toggleOpen()
+	Btn.MouseButton1Click:Connect(function()
 		open = not open
 		ListHolder.Visible = open
 		Holder.ZIndex = open and 100 or 1
-	end
-	Btn.Activated:Connect(toggleOpen)
-	Btn.MouseButton1Click:Connect(toggleOpen)
+	end)
 
 	registerFlag(flag, {
 		Get = function() return selected end,
@@ -808,7 +791,6 @@ local function buildDropdown(container, text, options, default, callback, flag)
 	Btn.TextSize = 12
 	Btn.TextColor3 = Theme.Text
 	Btn.TextXAlignment = Enum.TextXAlignment.Left
-	Btn.Active = true
 	Btn.Parent = Holder
 	stroke(Btn, Theme.Border)
 
@@ -854,7 +836,6 @@ local function buildDropdown(container, text, options, default, callback, flag)
 			OptBtn.TextColor3 = Theme.Text
 			OptBtn.TextXAlignment = Enum.TextXAlignment.Left
 			OptBtn.ZIndex = 101
-			OptBtn.Active = true
 			OptBtn.Parent = ListHolder
 
 			local OPad = Instance.new("UIPadding")
@@ -864,21 +845,19 @@ local function buildDropdown(container, text, options, default, callback, flag)
 			OptBtn.MouseEnter:Connect(function() OptBtn.BackgroundColor3 = Theme.Accent end)
 			OptBtn.MouseLeave:Connect(function() OptBtn.BackgroundColor3 = Theme.Element end)
 
-			local function doSelect() selectOption(opt, true) end
-			OptBtn.Activated:Connect(doSelect)
-			OptBtn.MouseButton1Click:Connect(doSelect)
+			OptBtn.MouseButton1Click:Connect(function()
+				selectOption(opt, true)
+			end)
 		end
 	end
 
 	build()
 
-	local function toggleOpen()
+	Btn.MouseButton1Click:Connect(function()
 		open = not open
 		ListHolder.Visible = open
 		Holder.ZIndex = open and 100 or 1
-	end
-	Btn.Activated:Connect(toggleOpen)
-	Btn.MouseButton1Click:Connect(toggleOpen)
+	end)
 
 	registerFlag(flag, {Get = function() return selected end, Set = function(v) selectOption(v, false) end})
 	if callback then callback(selected) end
@@ -906,7 +885,6 @@ local function buildSelectable(container, text, defaultSelected, callback)
 	Btn.TextSize = 12
 	Btn.TextColor3 = Theme.Text
 	Btn.TextXAlignment = Enum.TextXAlignment.Left
-	Btn.Active = true
 	Btn.Parent = container
 
 	local Pad = Instance.new("UIPadding")
@@ -920,13 +898,11 @@ local function buildSelectable(container, text, defaultSelected, callback)
 		Btn.BackgroundColor3 = state and Theme.Accent or Theme.Element
 	end)
 
-	local function toggle()
+	Btn.MouseButton1Click:Connect(function()
 		state = not state
 		Btn.BackgroundColor3 = state and Theme.Accent or Theme.Element
 		if callback then callback(state) end
-	end
-	Btn.Activated:Connect(toggle)
-	Btn.MouseButton1Click:Connect(toggle)
+	end)
 
 	return {
 		Set = function(v)
@@ -945,7 +921,6 @@ local function buildRadioButton(container, text, active, callback)
 	Holder.BackgroundTransparency = 1
 	Holder.Text = ""
 	Holder.AutoButtonColor = false
-	Holder.Active = true
 	Holder.Parent = container
 
 	local Outer = Instance.new("Frame")
@@ -981,9 +956,11 @@ local function buildRadioButton(container, text, active, callback)
 		if callback then callback(state) end
 	end
 
-	local function toggle() setState(not state) end
-	Holder.Activated:Connect(toggle)
-	Holder.MouseButton1Click:Connect(toggle)
+	Holder.MouseButton1Click:Connect(function()
+		if not state then
+			setState(true)
+		end
+	end)
 
 	return { Set = setState, Get = function() return state end }
 end
@@ -1015,7 +992,6 @@ local function buildSectionHeader(container, title, opts)
 	Header.BorderSizePixel = 0
 	Header.Text = ""
 	Header.AutoButtonColor = false
-	Header.Active = true
 	Header.Parent = SectionFrame
 	stroke(Header, Theme.Border)
 
@@ -1063,13 +1039,11 @@ local function buildSectionHeader(container, title, opts)
 	ContentLayout.Padding = UDim.new(0, 4)
 	ContentLayout.Parent = Content
 
-	local function toggleSection()
+	Header.MouseButton1Click:Connect(function()
 		collapsed = not collapsed
 		Content.Visible = not collapsed
 		Arrow.Text = collapsed and "▶" or "▼"
-	end
-	Header.Activated:Connect(toggleSection)
-	Header.MouseButton1Click:Connect(toggleSection)
+	end)
 
 	return Content
 end
@@ -1093,7 +1067,6 @@ local function buildTree(container, title)
 	Header.Size = UDim2.new(1, 0, 0, 18)
 	Header.BackgroundTransparency = 1
 	Header.Text = ""
-	Header.Active = true
 	Header.Parent = TreeFrame
 
 	local HeaderLayout = Instance.new("UIListLayout")
@@ -1138,13 +1111,11 @@ local function buildTree(container, title)
 	ContentLayout.Padding = UDim.new(0, 4)
 	ContentLayout.Parent = Content
 
-	local function toggleTree()
+	Header.MouseButton1Click:Connect(function()
 		collapsed = not collapsed
 		Content.Visible = not collapsed
 		Arrow.Text = collapsed and "▶" or "▼"
-	end
-	Header.Activated:Connect(toggleTree)
-	Header.MouseButton1Click:Connect(toggleTree)
+	end)
 
 	return Content
 end
@@ -1301,7 +1272,6 @@ function Library:CreateWindow(title, pos, size)
 	CollapseBtn.Font = Theme.Font
 	CollapseBtn.TextSize = 11
 	CollapseBtn.TextColor3 = Theme.Text
-	CollapseBtn.Active = true
 	CollapseBtn.Parent = TitleBar
 
 	local TitleLabel = Instance.new("TextLabel")
@@ -1343,7 +1313,7 @@ function Library:CreateWindow(title, pos, size)
 	Pages.Parent = Body
 
 	local fullSize = Main.Size
-	local function toggleCollapse()
+	CollapseBtn.MouseButton1Click:Connect(function()
 		Window.Collapsed = not Window.Collapsed
 		if Window.Collapsed then
 			CollapseBtn.Text = "▶"
@@ -1352,9 +1322,7 @@ function Library:CreateWindow(title, pos, size)
 			CollapseBtn.Text = "▼"
 			TS:Create(Main, TweenInfo.new(0.15), {Size = fullSize}):Play()
 		end
-	end
-	CollapseBtn.Activated:Connect(toggleCollapse)
-	CollapseBtn.MouseButton1Click:Connect(toggleCollapse)
+	end)
 
 	makeDraggable(TitleBar, Main)
 
@@ -1409,7 +1377,6 @@ function Library:CreateWindow(title, pos, size)
 		TabBtn.Font = Theme.Font
 		TabBtn.TextSize = 11
 		TabBtn.TextColor3 = Theme.SubText
-		TabBtn.Active = true
 		TabBtn.Parent = Tabs
 		stroke(TabBtn, Theme.Border)
 
@@ -1446,7 +1413,6 @@ function Library:CreateWindow(title, pos, size)
 			TabBtn.TextColor3 = Theme.Text
 		end
 
-		TabBtn.Activated:Connect(select)
 		TabBtn.MouseButton1Click:Connect(select)
 
 		local Category = buildScope(Page)
