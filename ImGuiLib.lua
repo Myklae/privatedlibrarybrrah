@@ -479,6 +479,15 @@ buildWidgetAPI = function(parent)
 	function API:AddProgressBar(text, min, max, default, format)
 		min, max = min or 0, max or 100
 		local value = default or min
+
+		local function formatValue(v)
+			if format then
+				local ok, res = pcall(string.format, format, v)
+				if ok then return res end
+			end
+			return tostring(v)
+		end
+
 		local Holder = Instance.new("Frame")
 		Holder.Size = UDim2.new(1, 0, 0, 32)
 		Holder.BackgroundColor3 = Theme.Element
@@ -487,7 +496,7 @@ buildWidgetAPI = function(parent)
 		corner(Holder)
 		stroke(Holder, Theme.Border, 1)
 		local Label = Instance.new("TextLabel")
-		Label.Size = UDim2.new(1, -16, 0, 15)
+		Label.Size = UDim2.new(1, -70, 0, 15)
 		Label.Position = UDim2.new(0, 8, 0, 2)
 		Label.BackgroundTransparency = 1
 		Label.Text = text
@@ -496,6 +505,16 @@ buildWidgetAPI = function(parent)
 		Label.TextColor3 = Theme.SubText
 		Label.TextXAlignment = Enum.TextXAlignment.Left
 		Label.Parent = Holder
+		local ValueLabel = Instance.new("TextLabel")
+		ValueLabel.Size = UDim2.new(0, 54, 0, 15)
+		ValueLabel.Position = UDim2.new(1, -62, 0, 2)
+		ValueLabel.BackgroundTransparency = 1
+		ValueLabel.Text = formatValue(value)
+		ValueLabel.Font = Enum.Font.Code
+		ValueLabel.TextSize = 12
+		ValueLabel.TextColor3 = Theme.SubText
+		ValueLabel.TextXAlignment = Enum.TextXAlignment.Right
+		ValueLabel.Parent = Holder
 		local Track = Instance.new("Frame")
 		Track.Size = UDim2.new(1, -16, 0, 8)
 		Track.Position = UDim2.new(0, 8, 0, 19)
@@ -511,6 +530,7 @@ buildWidgetAPI = function(parent)
 		return {Set = function(v)
 			value = math.clamp(v, min, max)
 			Fill.Size = UDim2.new((value - min) / (max - min), 0, 1, 0)
+			ValueLabel.Text = formatValue(value)
 		end}
 	end
 
@@ -1082,8 +1102,8 @@ buildWidgetAPI = function(parent)
 
 		local Content = Instance.new("Frame")
 		Content.BackgroundTransparency = 1
-		Content.Size = UDim2.new(1, -12, 0, 0)
-		Content.Position = UDim2.new(0, 12, 0, 0)
+		Content.Size = UDim2.new(1, -24, 0, 0)
+		Content.Position = UDim2.new(0, 14, 0, 0)
 		Content.AutomaticSize = Enum.AutomaticSize.Y
 		Content.Visible = defaultOpen
 		Content.Parent = Holder
