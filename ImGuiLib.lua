@@ -91,6 +91,43 @@ local function getScreenGui()
 	return gui
 end
 
+-- Global Tooltip Manager (Iris Feature)
+local TooltipFrame = Instance.new("TextLabel")
+TooltipFrame.Name = "ImGuiTooltip"
+TooltipFrame.Size = UDim2.new(0, 0, 0, 18)
+TooltipFrame.AutomaticSize = Enum.AutomaticSize.X
+TooltipFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+TooltipFrame.BorderSizePixel = 0
+TooltipFrame.Font = Theme.Font
+TooltipFrame.TextSize = 11
+TooltipFrame.TextColor3 = Theme.Text
+TooltipFrame.Visible = false
+TooltipFrame.ZIndex = 999
+TooltipFrame.Parent = getScreenGui()
+stroke(TooltipFrame, Theme.Border)
+
+local TooltipPad = Instance.new("UIPadding")
+TooltipPad.PaddingLeft = UDim.new(0, 6)
+TooltipPad.PaddingRight = UDim.new(0, 6)
+TooltipPad.Parent = TooltipFrame
+
+UIS.InputChanged:Connect(function(input)
+	if TooltipFrame.Visible and input.UserInputType == Enum.UserInputType.MouseMovement then
+		TooltipFrame.Position = UDim2.new(0, input.Position.X + 12, 0, input.Position.Y + 12)
+	end
+end)
+
+local function bindTooltip(inst, text)
+	inst.MouseEnter:Connect(function()
+		TooltipFrame.Text = text
+		TooltipFrame.Position = UDim2.new(0, UIS:GetMouseLocation().X + 12, 0, UIS:GetMouseLocation().Y + 12)
+		TooltipFrame.Visible = true
+	end)
+	inst.MouseLeave:Connect(function()
+		TooltipFrame.Visible = false
+	end)
+end
+
 local function hasFileApi()
 	return writefile and readfile and isfile and isfolder and makefolder
 end
@@ -188,6 +225,7 @@ local function buildLabel(container, text)
 	return Label
 end
 
+-- Separator Metni Artık Kesin Olarak En Solda
 local function buildSeparator(container, text)
 	local Row = Instance.new("Frame")
 	Row.Size = UDim2.new(1, 0, 0, text and 18 or 8)
@@ -196,23 +234,27 @@ local function buildSeparator(container, text)
 
 	local Layout = Instance.new("UIListLayout")
 	Layout.FillDirection = Enum.FillDirection.Horizontal
+	Layout.SortOrder = Enum.SortOrder.LayoutOrder
 	Layout.VerticalAlignment = Enum.VerticalAlignment.Center
 	Layout.Padding = UDim.new(0, 6)
 	Layout.Parent = Row
 
 	if text then
 		local Label = Instance.new("TextLabel")
+		Label.LayoutOrder = 1
 		Label.AutomaticSize = Enum.AutomaticSize.X
 		Label.Size = UDim2.new(0, 0, 1, 0)
 		Label.BackgroundTransparency = 1
 		Label.Font = Theme.Font
 		Label.TextSize = 12
 		Label.TextColor3 = Theme.SubText
+		Label.TextXAlignment = Enum.TextXAlignment.Left
 		Label.Text = text
 		Label.Parent = Row
 	end
 
 	local Line = Instance.new("Frame")
+	Line.LayoutOrder = 2
 	Line.Size = UDim2.new(0, 0, 0, 1)
 	Line.BackgroundColor3 = Theme.SeparatorLine
 	Line.BorderSizePixel = 0
@@ -491,6 +533,7 @@ local function buildProgressBar(container, text, min, max, default, format)
 	}
 end
 
+-- Colorpicker: Dynamic ZIndex Fix Added
 local function buildColorpicker(container, text, default, callback, flag)
 	local color = default or Color3.fromRGB(255, 255, 255)
 	local open = false
@@ -498,7 +541,7 @@ local function buildColorpicker(container, text, default, callback, flag)
 	local Holder = Instance.new("Frame")
 	Holder.Size = UDim2.new(1, 0, 0, 22)
 	Holder.BackgroundTransparency = 1
-	Holder.ZIndex = 3
+	Holder.ZIndex = 1
 	Holder.Parent = container
 
 	local Label = Instance.new("TextLabel")
@@ -526,7 +569,7 @@ local function buildColorpicker(container, text, default, callback, flag)
 	Panel.BackgroundColor3 = Theme.Background
 	Panel.BorderSizePixel = 0
 	Panel.Visible = false
-	Panel.ZIndex = 10
+	Panel.ZIndex = 100
 	Panel.Parent = Holder
 	stroke(Panel, Theme.Border)
 
@@ -539,7 +582,7 @@ local function buildColorpicker(container, text, default, callback, flag)
 		L.Font = Theme.Font
 		L.TextSize = 11
 		L.TextColor3 = Theme.SubText
-		L.ZIndex = 11
+		L.ZIndex = 101
 		L.Parent = Panel
 
 		local Track = Instance.new("Frame")
@@ -547,7 +590,7 @@ local function buildColorpicker(container, text, default, callback, flag)
 		Track.Position = UDim2.new(0, 24, 0, yPos + 2)
 		Track.BackgroundColor3 = Theme.Element
 		Track.BorderSizePixel = 0
-		Track.ZIndex = 11
+		Track.ZIndex = 101
 		Track.Parent = Panel
 		stroke(Track, Theme.Border)
 
@@ -555,7 +598,7 @@ local function buildColorpicker(container, text, default, callback, flag)
 		Fill.Size = UDim2.new(initial / 255, 0, 1, 0)
 		Fill.BackgroundColor3 = Theme.Accent
 		Fill.BorderSizePixel = 0
-		Fill.ZIndex = 11
+		Fill.ZIndex = 101
 		Fill.Parent = Track
 
 		return Track, Fill
@@ -596,6 +639,7 @@ local function buildColorpicker(container, text, default, callback, flag)
 	PreviewBtn.MouseButton1Click:Connect(function()
 		open = not open
 		Panel.Visible = open
+		Holder.ZIndex = open and 100 or 1
 	end)
 
 	registerFlag(flag, {
@@ -613,6 +657,7 @@ local function buildColorpicker(container, text, default, callback, flag)
 	end}
 end
 
+-- MultiDropdown: Dynamic ZIndex Fix Added
 local function buildMultiDropdown(container, text, options, defaults, callback, flag)
 	local selected = {}
 	for _, v in ipairs(defaults or {}) do selected[v] = true end
@@ -622,7 +667,7 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	local Holder = Instance.new("Frame")
 	Holder.Size = UDim2.new(1, 0, 0, 22)
 	Holder.BackgroundTransparency = 1
-	Holder.ZIndex = 3
+	Holder.ZIndex = 1
 	Holder.Parent = container
 
 	local Btn = Instance.new("TextButton")
@@ -646,7 +691,7 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	ListHolder.BackgroundColor3 = Theme.Background
 	ListHolder.BorderSizePixel = 0
 	ListHolder.Visible = false
-	ListHolder.ZIndex = 10
+	ListHolder.ZIndex = 100
 	ListHolder.Parent = Holder
 	stroke(ListHolder, Theme.Border)
 
@@ -676,7 +721,7 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 			OptBtn.TextSize = 12
 			OptBtn.TextColor3 = Theme.Text
 			OptBtn.TextXAlignment = Enum.TextXAlignment.Left
-			OptBtn.ZIndex = 11
+			OptBtn.ZIndex = 101
 			OptBtn.Parent = ListHolder
 
 			local OPad = Instance.new("UIPadding")
@@ -699,6 +744,7 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	Btn.MouseButton1Click:Connect(function()
 		open = not open
 		ListHolder.Visible = open
+		Holder.ZIndex = open and 100 or 1
 	end)
 
 	registerFlag(flag, {
@@ -721,6 +767,7 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	}
 end
 
+-- Dropdown: Dynamic ZIndex Fix Added
 local function buildDropdown(container, text, options, default, callback, flag)
 	local selected = default or options[1]
 	local open = false
@@ -729,7 +776,7 @@ local function buildDropdown(container, text, options, default, callback, flag)
 	local Holder = Instance.new("Frame")
 	Holder.Size = UDim2.new(1, 0, 0, 22)
 	Holder.BackgroundTransparency = 1
-	Holder.ZIndex = 3
+	Holder.ZIndex = 1
 	Holder.Parent = container
 
 	local Btn = Instance.new("TextButton")
@@ -753,7 +800,7 @@ local function buildDropdown(container, text, options, default, callback, flag)
 	ListHolder.BackgroundColor3 = Theme.Background
 	ListHolder.BorderSizePixel = 0
 	ListHolder.Visible = false
-	ListHolder.ZIndex = 10
+	ListHolder.ZIndex = 100
 	ListHolder.Parent = Holder
 	stroke(ListHolder, Theme.Border)
 
@@ -765,6 +812,7 @@ local function buildDropdown(container, text, options, default, callback, flag)
 		Btn.Text = text .. ": " .. tostring(selected)
 		ListHolder.Visible = false
 		open = false
+		Holder.ZIndex = 1
 		if callback then callback(opt) end
 		if fromUser then pushAutoSave() end
 	end
@@ -784,7 +832,7 @@ local function buildDropdown(container, text, options, default, callback, flag)
 			OptBtn.TextSize = 12
 			OptBtn.TextColor3 = Theme.Text
 			OptBtn.TextXAlignment = Enum.TextXAlignment.Left
-			OptBtn.ZIndex = 11
+			OptBtn.ZIndex = 101
 			OptBtn.Parent = ListHolder
 
 			local OPad = Instance.new("UIPadding")
@@ -802,6 +850,7 @@ local function buildDropdown(container, text, options, default, callback, flag)
 	Btn.MouseButton1Click:Connect(function()
 		open = not open
 		ListHolder.Visible = open
+		Holder.ZIndex = open and 100 or 1
 	end)
 
 	registerFlag(flag, {Get = function() return selected end, Set = function(v) selectOption(v, false) end})
@@ -816,6 +865,97 @@ local function buildDropdown(container, text, options, default, callback, flag)
 			selectOption(newOptions[1], false)
 		end
 	}
+end
+
+-- NEW IRIS FEATURE: Selectable List Item
+local function buildSelectable(container, text, defaultSelected, callback)
+	local state = defaultSelected or false
+
+	local Btn = Instance.new("TextButton")
+	Btn.Size = UDim2.new(1, 0, 0, 20)
+	Btn.BackgroundColor3 = state and Theme.Accent or Theme.Element
+	Btn.BorderSizePixel = 0
+	Btn.Text = text
+	Btn.Font = Theme.Font
+	Btn.TextSize = 12
+	Btn.TextColor3 = Theme.Text
+	Btn.TextXAlignment = Enum.TextXAlignment.Left
+	Btn.Parent = container
+
+	local Pad = Instance.new("UIPadding")
+	Pad.PaddingLeft = UDim.new(0, 6)
+	Pad.Parent = Btn
+
+	Btn.MouseEnter:Connect(function()
+		if not state then Btn.BackgroundColor3 = Theme.ElementHover end
+	end)
+	Btn.MouseLeave:Connect(function()
+		Btn.BackgroundColor3 = state and Theme.Accent or Theme.Element
+	end)
+	Btn.MouseButton1Click:Connect(function()
+		state = not state
+		Btn.BackgroundColor3 = state and Theme.Accent or Theme.Element
+		if callback then callback(state) end
+	end)
+
+	return {
+		Set = function(v)
+			state = v
+			Btn.BackgroundColor3 = state and Theme.Accent or Theme.Element
+		end,
+		Get = function() return state end
+	}
+end
+
+-- NEW IRIS FEATURE: Radio Button
+local function buildRadioButton(container, text, active, callback)
+	local state = active or false
+
+	local Holder = Instance.new("TextButton")
+	Holder.Size = UDim2.new(1, 0, 0, 20)
+	Holder.BackgroundTransparency = 1
+	Holder.Text = ""
+	Holder.AutoButtonColor = false
+	Holder.Parent = container
+
+	local Outer = Instance.new("Frame")
+	Outer.Size = UDim2.new(0, 14, 0, 14)
+	Outer.Position = UDim2.new(0, 0, 0.5, -7)
+	Outer.BackgroundColor3 = Theme.Element
+	Outer.BorderSizePixel = 0
+	Outer.Parent = Holder
+	stroke(Outer, Theme.Border)
+
+	local Dot = Instance.new("Frame")
+	Dot.Size = UDim2.new(0, 6, 0, 6)
+	Dot.Position = UDim2.new(0.5, -3, 0.5, -3)
+	Dot.BackgroundColor3 = Theme.Accent
+	Dot.BorderSizePixel = 0
+	Dot.Visible = state
+	Dot.Parent = Outer
+
+	local Label = Instance.new("TextLabel")
+	Label.Size = UDim2.new(1, -20, 1, 0)
+	Label.Position = UDim2.new(0, 20, 0, 0)
+	Label.BackgroundTransparency = 1
+	Label.Text = text
+	Label.Font = Theme.Font
+	Label.TextSize = 12
+	Label.TextColor3 = Theme.Text
+	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Parent = Holder
+
+	local function setState(v)
+		state = v
+		Dot.Visible = state
+		if callback then callback(state) end
+	end
+
+	Holder.MouseButton1Click:Connect(function()
+		setState(not state)
+	end)
+
+	return { Set = setState, Get = function() return state end }
 end
 
 -- ============================================================
@@ -1050,6 +1190,12 @@ local function buildScope(container)
 	function Scope:AddDropdown(text, options, default, callback, flag)
 		return buildDropdown(container, text, options, default, callback, flag)
 	end
+	function Scope:AddSelectable(text, defaultSelected, callback)
+		return buildSelectable(container, text, defaultSelected, callback)
+	end
+	function Scope:AddRadioButton(text, active, callback)
+		return buildRadioButton(container, text, active, callback)
+	end
 	function Scope:AddRow(height, gap)
 		return buildRow(container, height, gap)
 	end
@@ -1074,6 +1220,9 @@ local function buildScope(container)
 		GroupLayout.Parent = GroupFrame
 
 		return buildScope(GroupFrame)
+	end
+	function Scope:AddTooltip(inst, text)
+		bindTooltip(inst, text)
 	end
 
 	return Scope
