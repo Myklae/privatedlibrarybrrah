@@ -18,6 +18,7 @@ local Themes = {
 		Text = Color3.fromRGB(255, 255, 255),
 		SubText = Color3.fromRGB(140, 140, 140),
 		Border = Color3.fromRGB(65, 65, 72),
+		WindowTransparency = 0.08,
 	},
 	Light = {
 		Background = Color3.fromRGB(240, 240, 240),
@@ -30,6 +31,7 @@ local Themes = {
 		Text = Color3.fromRGB(20, 20, 20),
 		SubText = Color3.fromRGB(100, 100, 100),
 		Border = Color3.fromRGB(170, 170, 170),
+		WindowTransparency = 0.05,
 	},
 	Classic = {
 		Background = Color3.fromRGB(48, 48, 56),
@@ -42,6 +44,7 @@ local Themes = {
 		Text = Color3.fromRGB(230, 230, 230),
 		SubText = Color3.fromRGB(160, 160, 170),
 		Border = Color3.fromRGB(25, 25, 30),
+		WindowTransparency = 0.08,
 	},
 }
 
@@ -95,6 +98,80 @@ local function getScreenGui()
 	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	gui.Parent = PlayerGui
 	return gui
+end
+
+-- ==== OVERLAY (dropdown/colorpicker gibi açılır panellerin ALTINDAKİ elementlerin
+-- İÇİNDEN GEÇMESİNİ / onları KAPATMASINI engeller). ZIndexBehavior "Sibling" olduğu için
+-- iç içe geçmiş bir panel, kendi dalının dışındaki elementlerin üstüne asla çıkamaz;
+-- bu yüzden panel, ScreenGui'nin doğrudan altında ayrı bir üst-seviye katmanda gösterilir. ====
+local Overlay, OverlayBackdrop
+local OpenPopupCloseFns = {}
+
+local function getOverlay()
+	if Overlay and Overlay.Parent then return Overlay, OverlayBackdrop end
+
+	local screenGui = getScreenGui()
+
+	Overlay = Instance.new("Frame")
+	Overlay.Name = "Overlay"
+	Overlay.BackgroundTransparency = 1
+	Overlay.Size = UDim2.new(1, 0, 1, 0)
+	Overlay.ZIndex = 1000
+	Overlay.Parent = screenGui
+
+	OverlayBackdrop = Instance.new("TextButton")
+	OverlayBackdrop.Name = "Backdrop"
+	OverlayBackdrop.BackgroundTransparency = 1
+	OverlayBackdrop.AutoButtonColor = false
+	OverlayBackdrop.Text = ""
+	OverlayBackdrop.Size = UDim2.new(1, 0, 1, 0)
+	OverlayBackdrop.ZIndex = 1000
+	OverlayBackdrop.Visible = false
+	OverlayBackdrop.Parent = Overlay
+
+	OverlayBackdrop.MouseButton1Click:Connect(function()
+		local toClose = OpenPopupCloseFns
+		OpenPopupCloseFns = {}
+		OverlayBackdrop.Visible = false
+		for _, close in ipairs(toClose) do
+			close()
+		end
+	end)
+
+	return Overlay, OverlayBackdrop
+end
+
+-- popup: açılır panel (Frame). holder: paneli tetikleyen satır. closeFn: dışarıdan
+-- kapatıldığında widget'ın kendi "open" bayrağını da senkron tutan callback.
+-- Döndürülen open()/close() fonksiyonları widget'ın kendi tık olayına bağlanır.
+local function registerPopup(popup, holder, closeFn)
+	local overlay, backdrop = getOverlay()
+	popup.Parent = overlay
+	popup.ZIndex = 1001
+	for _, child in ipairs(popup:GetDescendants()) do
+		if child:IsA("GuiObject") then
+			child.ZIndex = math.max(child.ZIndex, 1001)
+		end
+	end
+
+	local function open()
+		OpenPopupCloseFns = {closeFn}
+		local pos = holder.AbsolutePosition
+		local size = holder.AbsoluteSize
+		-- Yükseklik build()'in en son ayarladığı Offset değerinden okunur, böylece
+		-- Refresh() ile seçenek sayısı değişse bile panel doğru boyutta açılır.
+		popup.Position = UDim2.new(0, pos.X, 0, pos.Y + size.Y + 2)
+		popup.Size = UDim2.new(0, size.X, 0, popup.Size.Y.Offset)
+		popup.Visible = true
+		backdrop.Visible = true
+	end
+
+	local function close()
+		popup.Visible = false
+		backdrop.Visible = false
+	end
+
+	return open, close
 end
 
 local function hasFileApi()
@@ -196,6 +273,9 @@ function Library:SetTheme(name)
 					break
 				end
 			end
+			if inst:GetAttribute("ImGuiWindowRoot") then
+				inst.BackgroundTransparency = newTheme.WindowTransparency or inst.BackgroundTransparency
+			end
 		end
 		if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
 			for key, oldColor in pairs(old) do
@@ -241,6 +321,11 @@ local buildWidgetAPI
 
 buildWidgetAPI = function(parent)
 	local API = {}
+	local orderCounter = 0
+	local function nextOrder()
+		orderCounter = orderCounter + 1
+		return orderCounter
+	end
 
 	function API:AddLabel(text)
 		local Label = Instance.new("TextLabel")
@@ -252,6 +337,7 @@ buildWidgetAPI = function(parent)
 		Label.TextColor3 = Theme.SubText
 		Label.TextXAlignment = Enum.TextXAlignment.Left
 		Label.Parent = parent
+		Label.LayoutOrder = nextOrder()
 		return Label
 	end
 
@@ -264,6 +350,7 @@ buildWidgetAPI = function(parent)
 		Btn.TextSize = 13
 		Btn.TextColor3 = Theme.Text
 		Btn.Parent = parent
+		Btn.LayoutOrder = nextOrder()
 		corner(Btn)
 		stroke(Btn, Theme.Border, 1)
 
@@ -286,6 +373,7 @@ buildWidgetAPI = function(parent)
 		Holder.Size = UDim2.new(1, 0, 0, 26)
 		Holder.BackgroundColor3 = Theme.Element
 		Holder.Parent = parent
+		Holder.LayoutOrder = nextOrder()
 		corner(Holder)
 		stroke(Holder, Theme.Border, 1)
 		local Label = Instance.new("TextLabel")
@@ -336,6 +424,7 @@ buildWidgetAPI = function(parent)
 		Holder.BackgroundColor3 = Theme.Element
 		Holder.Text = ""
 		Holder.Parent = parent
+		Holder.LayoutOrder = nextOrder()
 		corner(Holder)
 		stroke(Holder, Theme.Border, 1)
 		local Label = Instance.new("TextLabel")
@@ -394,6 +483,7 @@ buildWidgetAPI = function(parent)
 		Holder.Size = UDim2.new(1, 0, 0, 32)
 		Holder.BackgroundColor3 = Theme.Element
 		Holder.Parent = parent
+		Holder.LayoutOrder = nextOrder()
 		corner(Holder)
 		stroke(Holder, Theme.Border, 1)
 		local Label = Instance.new("TextLabel")
@@ -434,6 +524,7 @@ buildWidgetAPI = function(parent)
 		Holder.Text = ""
 		Holder.ZIndex = 2
 		Holder.Parent = parent
+		Holder.LayoutOrder = nextOrder()
 		corner(Holder)
 		stroke(Holder, Theme.Border, 1)
 		local Label = Instance.new("TextLabel")
@@ -524,9 +615,20 @@ buildWidgetAPI = function(parent)
 		bind(gTrack, function(v) g = v end)
 		bind(bTrack, function(v) b = v end)
 
+		local doClose
+		local popupOpen, popupClose = registerPopup(Panel, Holder, function() doClose() end)
+		doClose = function()
+			open = false
+			popupClose()
+		end
+
 		Holder.MouseButton1Click:Connect(function()
-			open = not open
-			Panel.Visible = open
+			if open then
+				doClose()
+			else
+				open = true
+				popupOpen()
+			end
 		end)
 
 		registerFlag(flag, {
@@ -556,6 +658,7 @@ buildWidgetAPI = function(parent)
 		Holder.Text = ""
 		Holder.ZIndex = 2
 		Holder.Parent = parent
+		Holder.LayoutOrder = nextOrder()
 		corner(Holder)
 		stroke(Holder, Theme.Border, 1)
 		local Label = Instance.new("TextLabel")
@@ -588,6 +691,7 @@ buildWidgetAPI = function(parent)
 		corner(ListHolder)
 		stroke(ListHolder, Theme.Border, 1)
 		local ListLayout = Instance.new("UIListLayout")
+		ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 		ListLayout.Parent = ListHolder
 
 		local function refreshLabel()
@@ -625,9 +729,20 @@ buildWidgetAPI = function(parent)
 		build()
 		refreshLabel()
 
+		local doClose
+		local popupOpen, popupClose = registerPopup(ListHolder, Holder, function() doClose() end)
+		doClose = function()
+			open = false
+			popupClose()
+		end
+
 		Holder.MouseButton1Click:Connect(function()
-			open = not open
-			ListHolder.Visible = open
+			if open then
+				doClose()
+			else
+				open = true
+				popupOpen()
+			end
 		end)
 
 		registerFlag(flag, {
@@ -657,6 +772,7 @@ buildWidgetAPI = function(parent)
 		Holder.BackgroundColor3 = Theme.Element
 		Holder.Text = ""
 		Holder.Parent = parent
+		Holder.LayoutOrder = nextOrder()
 		corner(Holder)
 		stroke(Holder, Theme.Border, 1)
 
@@ -718,6 +834,7 @@ buildWidgetAPI = function(parent)
 		Holder.Size = UDim2.new(1, 0, 0, 40)
 		Holder.BackgroundColor3 = Theme.Element
 		Holder.Parent = parent
+		Holder.LayoutOrder = nextOrder()
 		corner(Holder)
 		stroke(Holder, Theme.Border, 1)
 
@@ -799,6 +916,7 @@ buildWidgetAPI = function(parent)
 		Holder.ClipsDescendants = false
 		Holder.ZIndex = 2
 		Holder.Parent = parent
+		Holder.LayoutOrder = nextOrder()
 		corner(Holder)
 		stroke(Holder, Theme.Border, 1)
 
@@ -835,13 +953,15 @@ buildWidgetAPI = function(parent)
 		stroke(ListHolder, Theme.Border, 1)
 
 		local ListLayout = Instance.new("UIListLayout")
+		ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 		ListLayout.Parent = ListHolder
+
+		local doClose -- registerPopup'tan sonra atanır, aşağıda ileriye dönük kullanılıyor
 
 		local function selectOption(opt, fromUser)
 			selected = opt
 			SelectedLabel.Text = tostring(opt)
-			ListHolder.Visible = false
-			open = false
+			if doClose then doClose() end
 			if callback then callback(opt) end
 			if fromUser then pushAutoSave() end
 		end
@@ -879,9 +999,19 @@ buildWidgetAPI = function(parent)
 
 		build()
 
+		local popupOpen, popupClose = registerPopup(ListHolder, Holder, function() doClose() end)
+		doClose = function()
+			open = false
+			popupClose()
+		end
+
 		Holder.MouseButton1Click:Connect(function()
-			open = not open
-			ListHolder.Visible = open
+			if open then
+				doClose()
+			else
+				open = true
+				popupOpen()
+			end
 		end)
 
 		registerFlag(flag, {Get = function() return selected end, Set = function(v) selectOption(v, false) end})
@@ -913,8 +1043,10 @@ buildWidgetAPI = function(parent)
 		Holder.Size = UDim2.new(1, 0, 0, 0)
 		Holder.AutomaticSize = Enum.AutomaticSize.Y
 		Holder.Parent = parent
+		Holder.LayoutOrder = nextOrder()
 
 		local HolderLayout = Instance.new("UIListLayout")
+		HolderLayout.SortOrder = Enum.SortOrder.LayoutOrder
 		HolderLayout.Padding = UDim.new(0, 2)
 		HolderLayout.Parent = Holder
 
@@ -932,7 +1064,7 @@ buildWidgetAPI = function(parent)
 		Arrow.Position = UDim2.new(0, 4, 0, 0)
 		Arrow.BackgroundTransparency = 1
 		Arrow.Text = defaultOpen and "\226\150\190" or "\226\150\184"
-		Arrow.Font = Enum.Font.Code
+		Arrow.Font = Enum.Font.SourceSansBold
 		Arrow.TextSize = 12
 		Arrow.TextColor3 = Theme.SubText
 		Arrow.Parent = HeaderBtn
@@ -957,6 +1089,7 @@ buildWidgetAPI = function(parent)
 		Content.Parent = Holder
 
 		local ContentLayout = Instance.new("UIListLayout")
+		ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
 		ContentLayout.Padding = UDim.new(0, 4)
 		ContentLayout.Parent = Content
 
@@ -998,7 +1131,9 @@ function Library:CreateWindow(title, pos, size)
 	Main.Size = size or UDim2.new(0, 320, 0, 400)
 	Main.Position = pos or UDim2.new(0, 100 + offset, 0, 100 + offset)
 	Main.BackgroundColor3 = Theme.Background
+	Main.BackgroundTransparency = Theme.WindowTransparency or 0
 	Main.BorderSizePixel = 0
+	Main:SetAttribute("ImGuiWindowRoot", true)
 	Main.Parent = screenGui
 	corner(Main)
 	stroke(Main, Theme.Border, 1)
@@ -1024,7 +1159,7 @@ function Library:CreateWindow(title, pos, size)
 	CollapseBtn.Position = UDim2.new(0, 2, 0, 0)
 	CollapseBtn.BackgroundTransparency = 1
 	CollapseBtn.Text = "\226\150\190"
-	CollapseBtn.Font = Enum.Font.Code
+	CollapseBtn.Font = Enum.Font.SourceSansBold
 	CollapseBtn.TextSize = 11
 	CollapseBtn.TextColor3 = Theme.SubText
 	CollapseBtn.Parent = TitleBar
@@ -1056,6 +1191,7 @@ function Library:CreateWindow(title, pos, size)
 	Tabs.Parent = Body
 
 	local TabsLayout = Instance.new("UIListLayout")
+	TabsLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	TabsLayout.FillDirection = Enum.FillDirection.Horizontal
 	TabsLayout.Padding = UDim.new(0, 2)
 	TabsLayout.Parent = Tabs
@@ -1146,6 +1282,7 @@ function Library:CreateWindow(title, pos, size)
         Page.Parent = Pages
 
         local Layout = Instance.new("UIListLayout")
+        Layout.SortOrder = Enum.SortOrder.LayoutOrder
         Layout.Padding = UDim.new(0, 4)
         Layout.Parent = Page
 
