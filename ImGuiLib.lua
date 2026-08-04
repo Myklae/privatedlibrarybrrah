@@ -171,7 +171,10 @@ UIS.InputEnded:Connect(function(input)
 	end
 end)
 
+-- ============================================================
 -- Widget Builders
+-- ============================================================
+
 local function buildLabel(container, text)
 	local Label = Instance.new("TextLabel")
 	Label.Size = UDim2.new(1, 0, 0, 18)
@@ -378,6 +381,346 @@ local function buildTextbox(container, text, default, placeholder, callback, fla
 	return {Set = function(v) value = v; Box.Text = v end, Get = function() return value end}
 end
 
+local function buildKeybind(container, text, default, callback, flag)
+	local key = default
+	local listening = false
+
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(1, 0, 0, 22)
+	Holder.BackgroundTransparency = 1
+	Holder.Parent = container
+
+	local Label = Instance.new("TextLabel")
+	Label.Size = UDim2.new(1, -70, 1, 0)
+	Label.BackgroundTransparency = 1
+	Label.Text = text
+	Label.Font = Theme.Font
+	Label.TextSize = 12
+	Label.TextColor3 = Theme.Text
+	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Parent = Holder
+
+	local KeyBtn = Instance.new("TextButton")
+	KeyBtn.Size = UDim2.new(0, 64, 1, 0)
+	KeyBtn.Position = UDim2.new(1, -64, 0, 0)
+	KeyBtn.BackgroundColor3 = Theme.Element
+	KeyBtn.BorderSizePixel = 0
+	KeyBtn.Text = key and key.Name or "None"
+	KeyBtn.Font = Theme.Font
+	KeyBtn.TextSize = 11
+	KeyBtn.TextColor3 = Theme.Accent
+	KeyBtn.Parent = Holder
+	stroke(KeyBtn, Theme.Border)
+
+	KeyBtn.MouseButton1Click:Connect(function()
+		listening = true
+		KeyBtn.Text = "..."
+	end)
+
+	local conn
+	conn = UIS.InputBegan:Connect(function(input, gpe)
+		if listening and input.UserInputType == Enum.UserInputType.Keyboard then
+			key = input.KeyCode
+			KeyBtn.Text = key.Name
+			listening = false
+			if callback then callback(key, true) end
+			pushAutoSave()
+		elseif not listening and not gpe and key and input.KeyCode == key then
+			if callback then callback(key, false) end
+		end
+	end)
+	Holder.Destroying:Connect(function() conn:Disconnect() end)
+
+	registerFlag(flag, {
+		Get = function() return key and key.Name or "None" end,
+		Set = function(v)
+			key = Enum.KeyCode[v]
+			KeyBtn.Text = key and key.Name or "None"
+		end
+	})
+
+	return {
+		Set = function(v)
+			key = Enum.KeyCode[v]
+			KeyBtn.Text = key and key.Name or "None"
+		end
+	}
+end
+
+local function buildProgressBar(container, text, min, max, default, format)
+	min, max = min or 0, max or 100
+	local value = default or min
+
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(1, 0, 0, 22)
+	Holder.BackgroundTransparency = 1
+	Holder.Parent = container
+
+	local Track = Instance.new("Frame")
+	Track.Size = UDim2.new(1, 0, 1, 0)
+	Track.BackgroundColor3 = Theme.Element
+	Track.BorderSizePixel = 0
+	Track.Parent = Holder
+	stroke(Track, Theme.Border)
+
+	local Fill = Instance.new("Frame")
+	Fill.Size = UDim2.new((value - min) / math.max(1e-9, max - min), 0, 1, 0)
+	Fill.BackgroundColor3 = Theme.Accent
+	Fill.BorderSizePixel = 0
+	Fill.Parent = Track
+
+	local ValueLabel = Instance.new("TextLabel")
+	ValueLabel.Size = UDim2.new(1, -8, 1, 0)
+	ValueLabel.Position = UDim2.new(0, 4, 0, 0)
+	ValueLabel.BackgroundTransparency = 1
+	ValueLabel.Text = (text and (text .. ": ") or "") .. formatValue(format, value)
+	ValueLabel.Font = Theme.Font
+	ValueLabel.TextSize = 12
+	ValueLabel.TextColor3 = Theme.Text
+	ValueLabel.TextXAlignment = Enum.TextXAlignment.Left
+	ValueLabel.ZIndex = 2
+	ValueLabel.Parent = Track
+
+	return {
+		Set = function(v)
+			value = math.clamp(v, min, max)
+			Fill.Size = UDim2.new((value - min) / math.max(1e-9, max - min), 0, 1, 0)
+			ValueLabel.Text = (text and (text .. ": ") or "") .. formatValue(format, value)
+		end,
+		Get = function() return value end,
+	}
+end
+
+local function buildColorpicker(container, text, default, callback, flag)
+	local color = default or Color3.fromRGB(255, 255, 255)
+	local open = false
+
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(1, 0, 0, 22)
+	Holder.BackgroundTransparency = 1
+	Holder.ZIndex = 3
+	Holder.Parent = container
+
+	local Label = Instance.new("TextLabel")
+	Label.Size = UDim2.new(1, -34, 1, 0)
+	Label.BackgroundTransparency = 1
+	Label.Text = text
+	Label.Font = Theme.Font
+	Label.TextSize = 12
+	Label.TextColor3 = Theme.Text
+	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Parent = Holder
+
+	local PreviewBtn = Instance.new("TextButton")
+	PreviewBtn.Size = UDim2.new(0, 28, 0, 16)
+	PreviewBtn.Position = UDim2.new(1, -28, 0.5, -8)
+	PreviewBtn.BackgroundColor3 = color
+	PreviewBtn.BorderSizePixel = 0
+	PreviewBtn.Text = ""
+	PreviewBtn.Parent = Holder
+	stroke(PreviewBtn, Theme.Border)
+
+	local Panel = Instance.new("Frame")
+	Panel.Size = UDim2.new(1, 0, 0, 80)
+	Panel.Position = UDim2.new(0, 0, 1, 2)
+	Panel.BackgroundColor3 = Theme.Background
+	Panel.BorderSizePixel = 0
+	Panel.Visible = false
+	Panel.ZIndex = 10
+	Panel.Parent = Holder
+	stroke(Panel, Theme.Border)
+
+	local function makeSlider(labelText, yPos, initial)
+		local L = Instance.new("TextLabel")
+		L.Size = UDim2.new(0, 16, 0, 16)
+		L.Position = UDim2.new(0, 6, 0, yPos)
+		L.BackgroundTransparency = 1
+		L.Text = labelText
+		L.Font = Theme.Font
+		L.TextSize = 11
+		L.TextColor3 = Theme.SubText
+		L.ZIndex = 11
+		L.Parent = Panel
+
+		local Track = Instance.new("Frame")
+		Track.Size = UDim2.new(1, -30, 0, 12)
+		Track.Position = UDim2.new(0, 24, 0, yPos + 2)
+		Track.BackgroundColor3 = Theme.Element
+		Track.BorderSizePixel = 0
+		Track.ZIndex = 11
+		Track.Parent = Panel
+		stroke(Track, Theme.Border)
+
+		local Fill = Instance.new("Frame")
+		Fill.Size = UDim2.new(initial / 255, 0, 1, 0)
+		Fill.BackgroundColor3 = Theme.Accent
+		Fill.BorderSizePixel = 0
+		Fill.ZIndex = 11
+		Fill.Parent = Track
+
+		return Track, Fill
+	end
+
+	local rTrack, rFill = makeSlider("R", 6, color.R * 255)
+	local gTrack, gFill = makeSlider("G", 28, color.G * 255)
+	local bTrack, bFill = makeSlider("B", 50, color.B * 255)
+
+	local r, g, b = color.R * 255, color.G * 255, color.B * 255
+	local function update(fromUser)
+		color = Color3.fromRGB(math.floor(r), math.floor(g), math.floor(b))
+		PreviewBtn.BackgroundColor3 = color
+		rFill.Size = UDim2.new(r / 255, 0, 1, 0)
+		gFill.Size = UDim2.new(g / 255, 0, 1, 0)
+		bFill.Size = UDim2.new(b / 255, 0, 1, 0)
+		if callback then callback(color) end
+		if fromUser then pushAutoSave() end
+	end
+
+	local function bind(track, setter)
+		track.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				local function setFromX(x)
+					local rel = math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+					setter(rel * 255)
+					update(false)
+				end
+				setFromX(input.Position.X)
+				ActiveSlider = {Update = setFromX, Release = function() update(true) end}
+			end
+		end)
+	end
+	bind(rTrack, function(v) r = v end)
+	bind(gTrack, function(v) g = v end)
+	bind(bTrack, function(v) b = v end)
+
+	PreviewBtn.MouseButton1Click:Connect(function()
+		open = not open
+		Panel.Visible = open
+	end)
+
+	registerFlag(flag, {
+		Get = function() return {r = color.R, g = color.G, b = color.B} end,
+		Set = function(v)
+			r, g, b = v.r * 255, v.g * 255, v.b * 255
+			update(false)
+		end
+	})
+	if callback then callback(color) end
+
+	return {Set = function(c)
+		r, g, b = c.R * 255, c.G * 255, c.B * 255
+		update(false)
+	end}
+end
+
+local function buildMultiDropdown(container, text, options, defaults, callback, flag)
+	local selected = {}
+	for _, v in ipairs(defaults or {}) do selected[v] = true end
+	local open = false
+	local currentOptions = options
+
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(1, 0, 0, 22)
+	Holder.BackgroundTransparency = 1
+	Holder.ZIndex = 3
+	Holder.Parent = container
+
+	local Btn = Instance.new("TextButton")
+	Btn.Size = UDim2.new(1, 0, 1, 0)
+	Btn.BackgroundColor3 = Theme.Element
+	Btn.BorderSizePixel = 0
+	Btn.Text = text .. ": ..."
+	Btn.Font = Theme.Font
+	Btn.TextSize = 12
+	Btn.TextColor3 = Theme.Text
+	Btn.TextXAlignment = Enum.TextXAlignment.Left
+	Btn.Parent = Holder
+	stroke(Btn, Theme.Border)
+
+	local Pad = Instance.new("UIPadding")
+	Pad.PaddingLeft = UDim.new(0, 6)
+	Pad.Parent = Btn
+
+	local ListHolder = Instance.new("Frame")
+	ListHolder.Position = UDim2.new(0, 0, 1, 2)
+	ListHolder.BackgroundColor3 = Theme.Background
+	ListHolder.BorderSizePixel = 0
+	ListHolder.Visible = false
+	ListHolder.ZIndex = 10
+	ListHolder.Parent = Holder
+	stroke(ListHolder, Theme.Border)
+
+	local ListLayout = Instance.new("UIListLayout")
+	ListLayout.Parent = ListHolder
+
+	local function refreshLabel()
+		local names = {}
+		for _, opt in ipairs(currentOptions) do
+			if selected[opt] then table.insert(names, tostring(opt)) end
+		end
+		Btn.Text = text .. ": " .. (#names > 0 and table.concat(names, ", ") or "None")
+	end
+
+	local function build()
+		for _, c in ipairs(ListHolder:GetChildren()) do
+			if c:IsA("TextButton") then c:Destroy() end
+		end
+		ListHolder.Size = UDim2.new(1, 0, 0, #currentOptions * 20)
+		for _, opt in ipairs(currentOptions) do
+			local OptBtn = Instance.new("TextButton")
+			OptBtn.Size = UDim2.new(1, 0, 0, 20)
+			OptBtn.BackgroundColor3 = selected[opt] and Theme.Accent or Theme.Element
+			OptBtn.BorderSizePixel = 0
+			OptBtn.Text = tostring(opt)
+			OptBtn.Font = Theme.Font
+			OptBtn.TextSize = 12
+			OptBtn.TextColor3 = Theme.Text
+			OptBtn.TextXAlignment = Enum.TextXAlignment.Left
+			OptBtn.ZIndex = 11
+			OptBtn.Parent = ListHolder
+
+			local OPad = Instance.new("UIPadding")
+			OPad.PaddingLeft = UDim.new(0, 6)
+			OPad.Parent = OptBtn
+
+			OptBtn.MouseButton1Click:Connect(function()
+				selected[opt] = not selected[opt] or nil
+				OptBtn.BackgroundColor3 = selected[opt] and Theme.Accent or Theme.Element
+				refreshLabel()
+				if callback then callback(selected) end
+				pushAutoSave()
+			end)
+		end
+	end
+
+	build()
+	refreshLabel()
+
+	Btn.MouseButton1Click:Connect(function()
+		open = not open
+		ListHolder.Visible = open
+	end)
+
+	registerFlag(flag, {
+		Get = function() return selected end,
+		Set = function(v)
+			selected = v
+			build()
+			refreshLabel()
+		end
+	})
+	if callback then callback(selected) end
+
+	return {
+		Set = function(v) selected = v; build(); refreshLabel() end,
+		Refresh = function(newOptions)
+			currentOptions = newOptions
+			build()
+			refreshLabel()
+		end,
+	}
+end
+
 local function buildDropdown(container, text, options, default, callback, flag)
 	local selected = default or options[1]
 	local open = false
@@ -475,7 +818,10 @@ local function buildDropdown(container, text, options, default, callback, flag)
 	}
 end
 
--- Section / Tree / Row / Group Layout Builders
+-- ============================================================
+-- Section / Tree / Row / Group Builders
+-- ============================================================
+
 local function buildSectionHeader(container, title, opts)
 	opts = opts or {}
 	local collapsed = opts.Collapsed or false
@@ -659,6 +1005,12 @@ local function buildRow(container, height, gap)
 		return Btn
 	end
 
+	function Row:AddSlider(text, min, max, default, callback, flag, widthScale)
+		local api = buildSlider(RowFrame, text, min, max, default, callback, flag)
+		flexify(RowFrame:GetChildren()[#RowFrame:GetChildren()], widthScale)
+		return api
+	end
+
 	return Row
 end
 
@@ -682,6 +1034,18 @@ local function buildScope(container)
 	end
 	function Scope:AddTextbox(text, default, placeholder, callback, flag)
 		return buildTextbox(container, text, default, placeholder, callback, flag)
+	end
+	function Scope:AddKeybind(text, default, callback, flag)
+		return buildKeybind(container, text, default, callback, flag)
+	end
+	function Scope:AddProgressBar(text, min, max, default, format)
+		return buildProgressBar(container, text, min, max, default, format)
+	end
+	function Scope:AddColorpicker(text, default, callback, flag)
+		return buildColorpicker(container, text, default, callback, flag)
+	end
+	function Scope:AddMultiDropdown(text, options, defaults, callback, flag)
+		return buildMultiDropdown(container, text, options, defaults, callback, flag)
 	end
 	function Scope:AddDropdown(text, options, default, callback, flag)
 		return buildDropdown(container, text, options, default, callback, flag)
@@ -715,7 +1079,10 @@ local function buildScope(container)
 	return Scope
 end
 
--- Window Construction
+-- ============================================================
+-- Window & Config Tab API
+-- ============================================================
+
 function Library:CreateWindow(title, pos, size)
 	local screenGui = getScreenGui()
 	local offset = #Library.Windows * 20
@@ -803,7 +1170,6 @@ function Library:CreateWindow(title, pos, size)
 
 	makeDraggable(TitleBar, Main)
 
-	-- Minimal ImGUI Resize Handle
 	local ResizeHandle = Instance.new("Frame")
 	ResizeHandle.Size = UDim2.new(0, 12, 0, 12)
 	ResizeHandle.Position = UDim2.new(1, -12, 1, -12)
@@ -916,6 +1282,50 @@ function Library:CreateWindow(title, pos, size)
 
 	table.insert(Library.Windows, Window)
 	return Window
+end
+
+function Library:CreateConfigTab(Window, categoryName)
+	local Category = Window:AddCategory(categoryName or "Settings")
+	Category:AddLabel("Config Manager")
+
+	local nameBox = Category:AddTextbox("Config Adı", "", "Config ismi...")
+
+	local function getConfigList()
+		local list = Library:ListConfigs()
+		return #list > 0 and list or {"None"}
+	end
+
+	local configDropdown = Category:AddDropdown("Saved Configs", getConfigList(), nil, nil, nil)
+
+	Category:AddButton("Save Config", function()
+		local name = nameBox.Get()
+		if name == "" then return end
+		Library:SaveConfig(name)
+		configDropdown.Refresh(getConfigList())
+	end)
+
+	Category:AddButton("Load Config", function()
+		local name = configDropdown.Get()
+		if name == "None" then return end
+		Library:LoadConfig(name)
+	end)
+
+	Category:AddButton("Delete Config", function()
+		local name = configDropdown.Get()
+		if name == "None" or not hasFileApi() then return end
+		local path = Library.ConfigFolder .. "/" .. name .. ".json"
+		if isfile(path) then
+			delfile(path)
+			configDropdown.Refresh(getConfigList())
+		end
+	end)
+
+	Category:AddCheckbox("Auto Save", Library.AutoSaveEnabled, function(v)
+		local name = configDropdown.Get()
+		Library:SetAutoSave(v, name ~= "None" and name or nil)
+	end)
+
+	return Category
 end
 
 return Library
