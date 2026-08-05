@@ -32,7 +32,7 @@ local Theme = {
 local Library = {}
 Library.__index = Library
 Library.Windows = {}
-Library.ToolWindows = {} -- Tools menüsünden açılan pencerelerin referansı
+Library.ToolWindows = {}
 Library.Flags = {}
 Library.ConfigFolder = "ImGuiConfigs"
 Library.AutoSaveEnabled = false
@@ -648,7 +648,6 @@ local function buildKnob(container, text, values, defaultIndex, callback, flag, 
 	Pointer.BorderSizePixel = 0
 	Pointer.Parent = Dial
 
-	-- Stepped Variant için dış dairesel adım çentikleri (Ticks)
 	local Ticks = {}
 	local count = #values
 	local ANGLE_MIN = -135
@@ -732,7 +731,7 @@ local function buildKnob(container, text, values, defaultIndex, callback, flag, 
 	})
 
 	apply()
-	return {
+	return Holder, {
 		Set = function(i) index = i; apply() end,
 		Get = function() return values[index], index end
 	}
@@ -890,7 +889,6 @@ local function buildProgressBar(container, text, min, max, default, format)
 	}
 end
 
--- Colorpicker With Direct RGB Numeric Input Textboxes
 local function buildColorpicker(container, text, default, callback, flag)
 	local color = default or Color3.fromRGB(255, 255, 255)
 	local isOpen = false
@@ -1539,6 +1537,12 @@ local function buildRow(container, height, gap)
 		return api
 	end
 
+	function Row:AddKnob(text, values, defaultIndex, callback, flag, size, widthScale)
+		local holder, api = buildKnob(RowFrame, text, values, defaultIndex, callback, flag, size)
+		flexify(holder, widthScale)
+		return api
+	end
+
 	return Row
 end
 
@@ -1564,7 +1568,8 @@ local function buildScope(container)
 		return buildRangeSlider(container, text, min, max, defaultLow, defaultHigh, callback, flag)
 	end
 	function Scope:AddKnob(text, values, defaultIndex, callback, flag, size)
-		return buildKnob(container, text, values, defaultIndex, callback, flag, size)
+		local _, api = buildKnob(container, text, values, defaultIndex, callback, flag, size)
+		return api
 	end
 	function Scope:AddTextbox(text, default, placeholder, callback, flag)
 		return buildTextbox(container, text, default, placeholder, callback, flag)
@@ -1848,7 +1853,6 @@ function Library:CreateWindow(title, pos, size, opts)
 				end)
 			end
 
-			-- Toggle Mantığı: Açıksa kapat, kapalıysa aç
 			makeToolOpt("Config Settings", function()
 				if Library.ToolWindows.Config and Library.ToolWindows.Config.Main and Library.ToolWindows.Config.Main.Parent then
 					Library.ToolWindows.Config:Destroy()
@@ -2023,7 +2027,6 @@ function Library:CreateConfigWindow()
 	return ConfigWin
 end
 
--- Gelişmiş ImGUI Style Editor (Font, Font Size, Spacing, Color)
 function Library:CreateStyleEditorWindow()
 	local StyleWin = Library:CreateWindow("Style Editor", UDim2.new(0, 200, 0, 150), UDim2.new(0, 320, 0, 420))
 
