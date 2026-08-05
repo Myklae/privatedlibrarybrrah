@@ -78,7 +78,7 @@ local function getScreenGui()
 end
 
 -- ============================================================
--- imgui-notify Tarzı Bildirim Sistemi (Sağ Alt Köşe)
+-- imgui-notify Tarzı Bildirim Sistemi
 -- ============================================================
 local NotifyContainer = Instance.new("Frame")
 NotifyContainer.Name = "NotifyContainer"
@@ -295,7 +295,18 @@ UIS.InputChanged:Connect(function(input)
 	end
 end)
 
-local function bindTooltip(inst, text)
+-- Geliştirilmiş Düzeltilmiş bindTooltip (API veya GuiObject uyumlu)
+local function bindTooltip(target, text)
+	if not target then return end
+	local inst = target
+	if type(target) == "table" then
+		inst = target.Instance or target.Holder or target.Widget
+	end
+
+	if not inst or typeof(inst) ~= "Instance" or not inst:IsA("GuiObject") then
+		return
+	end
+
 	inst.MouseEnter:Connect(function()
 		TooltipFrame.Text = text
 		TooltipFrame.Position = UDim2.new(0, UIS:GetMouseLocation().X + 12, 0, UIS:GetMouseLocation().Y + 12)
@@ -494,6 +505,9 @@ end)
 
 -- Helper: Add Dependency Support To Widget API
 local function attachDependencyAPI(holder, api)
+	api.Instance = holder
+	api.Holder = holder
+
 	local isDisabled = false
 
 	function api.SetDisabled(disabled)
@@ -1735,12 +1749,11 @@ local function buildScope(container)
 		bindTooltip(inst, text)
 	end
 
-	-- Tab İçi Canlı Arama Kutusu
 	function Scope:AddTabSearchBox(placeholder)
 		local BoxFrame = Instance.new("Frame")
 		BoxFrame.Size = UDim2.new(1, 0, 0, 22)
 		BoxFrame.BackgroundTransparency = 1
-		BoxFrame.LayoutOrder = -9999 -- En üstte durmasını sağla
+		BoxFrame.LayoutOrder = -9999
 		BoxFrame.Parent = container
 
 		local Box = Instance.new("TextBox")
@@ -2145,7 +2158,6 @@ function Library:CreateConfigWindow()
 		Library:LoadConfig(name)
 	end)
 
-	-- Onay Penceresi (Confirm Modal) İle Güvenli Silme
 	MainTab:AddButton("Delete Config", function()
 		local name = configDropdown.Get()
 		if name == "None" or not hasFileApi() then return end
