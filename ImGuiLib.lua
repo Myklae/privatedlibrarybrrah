@@ -613,6 +613,23 @@ track(UIS.InputEnded:Connect(function(input)
 	end
 end))
 
+-- ============================================================
+-- YENİ: Global Checkbox/Toggle Keybind Registry
+-- Herhangi bir checkbox'a sağ tıklayıp "Bind Key" ile bir tuş
+-- atanabilir; o tuşa basıldığında ilgili checkbox toggle olur.
+-- ============================================================
+local KeybindToggles = {}
+
+track(UIS.InputBegan:Connect(function(input, gpe)
+	if gpe then return end
+	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+	for _, entry in ipairs(KeybindToggles) do
+		if entry.Key == input.KeyCode then
+			entry.Toggle()
+		end
+	end
+end))
+
 -- Helper: Add Dependency Support To Widget API
 local function attachDependencyAPI(holder, api)
 	api.Instance = holder
@@ -733,10 +750,14 @@ local function buildButton(container, text, callback)
 	return Btn, api
 end
 
-local function buildCheckbox(container, text, default, callback, flag)
+local function buildCheckbox(container, text, default, callback, flag, bindEnabled)
+	if bindEnabled == nil then bindEnabled = true end
 	local state = default or false
 	local defaultVal = state
 	local onChangedCallbacks = {}
+	local bindKey = nil
+	local listeningBind = false
+	local bindConn = nil
 
 	local Holder = Instance.new("TextButton")
 	Holder.Size = UDim2.new(1, 0, 0, 20)
@@ -778,8 +799,36 @@ local function buildCheckbox(container, text, default, callback, flag)
 		setState(not state, true)
 	end)
 
+	-- Keybind toggle desteği: kayıt defteri sadece bindEnabled true iken çalışsın diye
+	-- Key alanı nil olduğu sürece global handler zaten eşleşme bulamaz.
+	local keybindEntry = { Key = nil, Toggle = function() setState(not state, true) end }
+	table.insert(KeybindToggles, keybindEntry)
+
+	local function setBindKey(k)
+		bindKey = k
+		keybindEntry.Key = k
+	end
+
 	attachContextMenu(Holder, function()
-		return {{Text = "Reset to Default", Callback = function() setState(defaultVal, true) end}}
+		local items = {{Text = "Reset to Default", Callback = function() setState(defaultVal, true) end}}
+		if bindEnabled then
+			table.insert(items, {Text = "Bind Key: " .. (bindKey and bindKey.Name or "None"), Callback = function()
+				if listeningBind then return end
+				listeningBind = true
+				if bindConn then bindConn:Disconnect() end
+				bindConn = UIS.InputBegan:Connect(function(bindInput)
+					if bindInput.UserInputType == Enum.UserInputType.Keyboard then
+						setBindKey(bindInput.KeyCode)
+						listeningBind = false
+						if bindConn then bindConn:Disconnect(); bindConn = nil end
+					end
+				end)
+			end})
+			if bindKey then
+				table.insert(items, {Text = "Unbind Key", Callback = function() setBindKey(nil) end})
+			end
+		end
+		return items
 	end)
 
 	registerFlag(flag, {Get = function() return state end, Set = function(v) setState(v, false) end})
@@ -788,17 +837,38 @@ local function buildCheckbox(container, text, default, callback, flag)
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) setState(v, false) end,
 		Get = function() return state end,
-		OnChanged = function(cb) table.insert(onChangedCallbacks, cb) end
+		OnChanged = function(cb) table.insert(onChangedCallbacks, cb) end,
+		SetBindKey = function(k) setBindKey(k) end,
+		GetBindKey = function() return bindKey end
 	})
 
 	return Holder, api
 end
 
-local function buildSlider(container, text, min, max, default, callback, flag)
+local function buildSlider(container, text, min, max, default, callback, flag, decimals, scrollable)
 	min = min or 0
 	max = max or 100
+	decimals = decimals or 0
+	local mult = 10 ^ decimals
 	local value = default or min
 	local defaultVal = value
+
+	local function roundVal(v)
+		if decimals > 0 then
+			return math.floor(v * mult + 0.5) / mult
+		else
+			return math.floor(v + 0.5)
+		end
+	end
+
+	local function fmt(v)
+		if decimals > 0 then
+			return string.format("%." .. decimals .. "f", v)
+		end
+		return tostring(v)
+	end
+
+	value = roundVal(value)
 
 	local Holder = Instance.new("Frame")
 	Holder.Size = UDim2.new(1, 0, 0, 22)
@@ -836,7 +906,7 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 	ValueLabel.Size = UDim2.new(1, -8, 1, 0)
 	ValueLabel.Position = UDim2.new(0, 4, 0, 0)
 	ValueLabel.BackgroundTransparency = 1
-	ValueLabel.Text = text .. ": " .. tostring(value)
+	ValueLabel.Text = text .. ": " .. fmt(value)
 	ValueLabel.Font = Theme.Font
 	ValueLabel.TextSize = Theme.TextSize
 	ValueLabel.TextColor3 = Theme.Text
@@ -844,38 +914,67 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 	ValueLabel.ZIndex = 4
 	ValueLabel.Parent = Track
 
-	local function apply(v)
-		value = math.clamp(v, min, max)
+	-- Debounce/Throttle: hızlı sürüklemede callback'i her pikselde değil
+	-- en fazla ~50ms'de bir tetikler; görsel güncelleme her zaman anlıktır.
+	local THROTTLE = 0.05
+	local lastFire = 0
+
+	local function applyVisual()
 		grabWidth = Theme.GrabberWidth or 10
 		local r = (value - min) / math.max(1e-9, max - min)
 		Fill.Size = UDim2.new(r, 0, 1, 0)
 		Grabber.Size = UDim2.new(0, grabWidth, 1, 0)
 		Grabber.Position = UDim2.new(r, -r * grabWidth, 0, 0)
-		ValueLabel.Text = text .. ": " .. tostring(value)
+		ValueLabel.Text = text .. ": " .. fmt(value)
+	end
+
+	local function fireCallback()
+		lastFire = os.clock()
 		safeCall(callback, value)
+	end
+
+	local function apply(v, forceFire)
+		value = math.clamp(roundVal(v), min, max)
+		applyVisual()
+		if forceFire or (os.clock() - lastFire) >= THROTTLE then
+			fireCallback()
+		end
 	end
 
 	local function setFromX(x)
 		local r = math.clamp((x - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
-		apply(math.floor(min + (max - min) * r))
+		apply(min + (max - min) * r)
 	end
 
 	Track.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			setFromX(input.Position.X)
-			ActiveSlider = { Update = setFromX, Release = pushAutoSave }
+			ActiveSlider = { Update = setFromX, Release = function() fireCallback(); pushAutoSave() end }
 		end
 	end)
 
+	if scrollable then
+		local hovering = false
+		Track.MouseEnter:Connect(function() hovering = true end)
+		Track.MouseLeave:Connect(function() hovering = false end)
+		local step = decimals > 0 and (1 / mult) or 1
+		track(UIS.InputChanged:Connect(function(input)
+			if hovering and input.UserInputType == Enum.UserInputType.MouseWheel then
+				apply(value + (input.Position.Z > 0 and step or -step), true)
+				pushAutoSave()
+			end
+		end))
+	end
+
 	attachContextMenu(Track, function()
-		return {{Text = "Reset to Default", Callback = function() apply(defaultVal); pushAutoSave() end}}
+		return {{Text = "Reset to Default", Callback = function() apply(defaultVal, true); pushAutoSave() end}}
 	end)
 
-	registerFlag(flag, {Get = function() return value end, Set = function(v) apply(v) end})
+	registerFlag(flag, {Get = function() return value end, Set = function(v) apply(v, true) end})
 	if callback then safeCall(callback, value) end
 
 	local api = attachDependencyAPI(Holder, {
-		Set = function(v) apply(v) end,
+		Set = function(v) apply(v, true) end,
 		Get = function() return value end
 	})
 	return api
@@ -1361,11 +1460,13 @@ local function buildProgressBar(container, text, min, max, default, format)
 end
 
 -- ============================================================
--- YENİ: RGB Inputlu Colorpicker
+-- YENİ: RGB(A) + Hex Inputlu Colorpicker
 -- ============================================================
-local function buildColorpicker(container, text, default, callback, flag)
+local function buildColorpicker(container, text, default, callback, flag, defaultAlpha)
 	local color = default or Color3.fromRGB(255, 255, 255)
+	local alpha = (defaultAlpha ~= nil) and defaultAlpha or 1
 	local defaultVal = color
+	local defaultAlphaVal = alpha
 	local isOpen = false
 
 	local Holder = Instance.new("Frame")
@@ -1393,6 +1494,7 @@ local function buildColorpicker(container, text, default, callback, flag)
 	Swatch.Size = UDim2.new(0, 22, 1, 0)
 	Swatch.Position = UDim2.new(1, -22, 0, 0)
 	Swatch.BackgroundColor3 = color
+	Swatch.BackgroundTransparency = 1 - alpha
 	Swatch.BorderSizePixel = 0
 	Swatch.Text = ""
 	Swatch.AutoButtonColor = false
@@ -1403,16 +1505,27 @@ local function buildColorpicker(container, text, default, callback, flag)
 		isOpen = false
 	end
 
-	local function setColor(c, fromUser)
+	local function toHex(c)
+		return string.format("#%02X%02X%02X", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
+	end
+
+	local hexBoxRef = nil
+	local alphaLblRef = nil
+
+	local function setColor(c, a, fromUser)
 		color = c
+		alpha = math.clamp(a or alpha, 0, 1)
 		Swatch.BackgroundColor3 = color
-		safeCall(callback, color)
+		Swatch.BackgroundTransparency = 1 - alpha
+		if hexBoxRef then hexBoxRef.Text = toHex(color) end
+		if alphaLblRef then alphaLblRef.Text = "A: " .. math.floor(alpha * 255 + 0.5) end
+		safeCall(callback, color, alpha)
 		if fromUser then pushAutoSave() end
 	end
 
 	local function openPanel()
 		isOpen = true
-		openOverlayPanel(Holder, 78, function(panel)
+		openOverlayPanel(Holder, 122, function(panel)
 			local Pad2 = Instance.new("UIPadding")
 			Pad2.PaddingLeft = UDim.new(0, 6)
 			Pad2.PaddingRight = UDim.new(0, 6)
@@ -1426,7 +1539,7 @@ local function buildColorpicker(container, text, default, callback, flag)
 
 			local r, g, b = math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255)
 
-			local function makeChannelSlider(label, initial, onChange)
+			local function makeChannelSlider(label, initial, onChange, isAlpha)
 				local Row = Instance.new("Frame")
 				Row.Size = UDim2.new(1, 0, 0, 18)
 				Row.BackgroundTransparency = 1
@@ -1459,6 +1572,8 @@ local function buildColorpicker(container, text, default, callback, flag)
 				CLbl.ZIndex = 2
 				CLbl.Parent = CTrack
 
+				if isAlpha then alphaLblRef = CLbl end
+
 				local function setFromX(x)
 					local rel = math.clamp((x - CTrack.AbsolutePosition.X) / CTrack.AbsoluteSize.X, 0, 1)
 					local v = math.floor(rel * 255)
@@ -1477,15 +1592,49 @@ local function buildColorpicker(container, text, default, callback, flag)
 
 			makeChannelSlider("R", r, function(v)
 				r = v
-				setColor(Color3.fromRGB(r, g, b), true)
+				setColor(Color3.fromRGB(r, g, b), alpha, true)
 			end)
 			makeChannelSlider("G", g, function(v)
 				g = v
-				setColor(Color3.fromRGB(r, g, b), true)
+				setColor(Color3.fromRGB(r, g, b), alpha, true)
 			end)
 			makeChannelSlider("B", b, function(v)
 				b = v
-				setColor(Color3.fromRGB(r, g, b), true)
+				setColor(Color3.fromRGB(r, g, b), alpha, true)
+			end)
+			makeChannelSlider("A", math.floor(alpha * 255), function(v)
+				setColor(color, v / 255, true)
+			end, true)
+
+			local HexRow = Instance.new("Frame")
+			HexRow.Size = UDim2.new(1, 0, 0, 18)
+			HexRow.BackgroundTransparency = 1
+			HexRow.Parent = panel
+
+			local HexBox = Instance.new("TextBox")
+			HexBox.Size = UDim2.new(1, 0, 1, 0)
+			HexBox.BackgroundColor3 = Theme.Element
+			HexBox.BorderSizePixel = 0
+			HexBox.Text = toHex(color)
+			HexBox.Font = Theme.Font
+			HexBox.TextSize = 11
+			HexBox.TextColor3 = Theme.Text
+			HexBox.ClearTextOnFocus = false
+			HexBox.Parent = HexRow
+			stroke(HexBox, Theme.Border)
+			hexBoxRef = HexBox
+
+			HexBox.FocusLost:Connect(function()
+				local hex = HexBox.Text:gsub("#", "")
+				if #hex == 6 and hex:match("^%x+$") then
+					local nr = tonumber(hex:sub(1, 2), 16)
+					local ng = tonumber(hex:sub(3, 4), 16)
+					local nb = tonumber(hex:sub(5, 6), 16)
+					r, g, b = nr, ng, nb
+					setColor(Color3.fromRGB(nr, ng, nb), alpha, true)
+				else
+					HexBox.Text = toHex(color)
+				end
 			end)
 		end, closePanel, 180)
 	end
@@ -1498,18 +1647,24 @@ local function buildColorpicker(container, text, default, callback, flag)
 	end)
 
 	attachContextMenu(Btn, function()
-		return {{Text = "Reset to Default", Callback = function() setColor(defaultVal, true) end}}
+		return {{Text = "Reset to Default", Callback = function() setColor(defaultVal, defaultAlphaVal, true) end}}
 	end)
 
 	registerFlag(flag, {
-		Get = function() return color end,
-		Set = function(v) setColor(v, false) end
+		Get = function() return {Color = color, Alpha = alpha} end,
+		Set = function(v)
+			if typeof(v) == "table" then
+				setColor(v.Color, v.Alpha, false)
+			else
+				setColor(v, alpha, false)
+			end
+		end
 	})
-	if callback then safeCall(callback, color) end
+	if callback then safeCall(callback, color, alpha) end
 
 	local api = attachDependencyAPI(Holder, {
-		Set = function(v) setColor(v, false) end,
-		Get = function() return color end
+		Set = function(v, a) setColor(v, a, false) end,
+		Get = function() return color, alpha end
 	})
 	return api
 end
@@ -2217,8 +2372,8 @@ local function buildRow(container, height, gap)
 		return api
 	end
 
-	function Row:AddCheckbox(text, default, callback, flag, widthScale)
-		local Holder, api = buildCheckbox(RowFrame, text, default, callback, flag)
+	function Row:AddCheckbox(text, default, callback, flag, widthScale, bindEnabled)
+		local Holder, api = buildCheckbox(RowFrame, text, default, callback, flag, bindEnabled)
 		flexify(Holder, widthScale)
 		return api
 	end
@@ -2229,12 +2384,12 @@ local function buildRow(container, height, gap)
 		return api
 	end
 
-	function Row:AddSlider(text, min, max, default, callback, flag, widthScale)
+	function Row:AddSlider(text, min, max, default, callback, flag, widthScale, decimals, scrollable)
 		-- NOT: Önceden RowFrame:GetChildren() ile "son eklenen child" bulunmaya
 		-- çalışılıyordu; bu kırılgandı (UIListLayout de bir child, sıralama
 		-- garantisi net değil). buildSlider zaten Holder'ı api.Instance
 		-- üzerinden döndürüyor, direkt onu kullanmak hem daha kısa hem güvenli.
-		local api = buildSlider(RowFrame, text, min, max, default, callback, flag)
+		local api = buildSlider(RowFrame, text, min, max, default, callback, flag, decimals, scrollable)
 		flexify(api.Instance, widthScale)
 		return api
 	end
@@ -2261,16 +2416,16 @@ local function buildScope(container)
 		local _, api = buildButton(container, text, callback)
 		return api
 	end
-	function Scope:AddCheckbox(text, default, callback, flag)
-		local _, api = buildCheckbox(container, text, default, callback, flag)
+	function Scope:AddCheckbox(text, default, callback, flag, bindEnabled)
+		local _, api = buildCheckbox(container, text, default, callback, flag, bindEnabled)
 		return api
 	end
-	function Scope:AddToggle(text, default, callback, flag)
-		local _, api = buildCheckbox(container, text, default, callback, flag)
+	function Scope:AddToggle(text, default, callback, flag, bindEnabled)
+		local _, api = buildCheckbox(container, text, default, callback, flag, bindEnabled)
 		return api
 	end
-	function Scope:AddSlider(text, min, max, default, callback, flag)
-		return buildSlider(container, text, min, max, default, callback, flag)
+	function Scope:AddSlider(text, min, max, default, callback, flag, decimals, scrollable)
+		return buildSlider(container, text, min, max, default, callback, flag, decimals, scrollable)
 	end
 	function Scope:AddRangeSlider(text, min, max, defaultLow, defaultHigh, callback, flag)
 		return buildRangeSlider(container, text, min, max, defaultLow, defaultHigh, callback, flag)
@@ -2291,8 +2446,8 @@ local function buildScope(container)
 	function Scope:AddProgressBar(text, min, max, default, format)
 		return buildProgressBar(container, text, min, max, default, format)
 	end
-	function Scope:AddColorpicker(text, default, callback, flag)
-		return buildColorpicker(container, text, default, callback, flag)
+	function Scope:AddColorpicker(text, default, callback, flag, defaultAlpha)
+		return buildColorpicker(container, text, default, callback, flag, defaultAlpha)
 	end
 	function Scope:AddMultiDropdown(text, options, defaults, callback, flag)
 		return buildMultiDropdown(container, text, options, defaults, callback, flag)
