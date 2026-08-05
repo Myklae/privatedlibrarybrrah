@@ -30,6 +30,16 @@ local Theme = {
 	GrabberWidth = 10,
 }
 
+local Library = {}
+Library.__index = Library
+Library.Windows = {}
+Library.ToolWindows = {}
+Library.Flags = {}
+Library.RegisteredKeybinds = {}
+Library.ConfigFolder = "ImGuiConfigs"
+Library.AutoSaveEnabled = false
+Library.CurrentConfig = nil
+
 -- ============================================================
 -- Z-Index / Katman Yönetimi
 -- İmGui pencereleri ve popup/overlay katmanları için merkezi
@@ -65,16 +75,6 @@ local function windowZCeiling()
 	end
 	return ceiling + 1
 end
-
-local Library = {}
-Library.__index = Library
-Library.Windows = {}
-Library.ToolWindows = {}
-Library.Flags = {}
-Library.RegisteredKeybinds = {}
-Library.ConfigFolder = "ImGuiConfigs"
-Library.AutoSaveEnabled = false
-Library.CurrentConfig = nil
 
 -- ============================================================
 -- ID Stack Sistemi (PushID / PopID / GetID)
