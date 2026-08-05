@@ -23,6 +23,10 @@ local Theme = {
 	Border = Color3.fromRGB(50, 50, 60),
 	SeparatorLine = Color3.fromRGB(50, 50, 60),
 	Font = Enum.Font.RobotoMono,
+	TextSize = 12,
+	ItemSpacing = 4,
+	IndentSpacing = 12,
+	GrabberWidth = 10,
 }
 
 local Library = {}
@@ -284,7 +288,7 @@ local function buildLabel(container, text)
 	Label.BackgroundTransparency = 1
 	Label.Text = text
 	Label.Font = Theme.Font
-	Label.TextSize = 12
+	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.SubText
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.Parent = container
@@ -317,7 +321,7 @@ local function buildSeparator(container, text)
 		Label.Size = UDim2.new(0, 0, 1, 0)
 		Label.BackgroundTransparency = 1
 		Label.Font = Theme.Font
-		Label.TextSize = 12
+		Label.TextSize = Theme.TextSize
 		Label.TextColor3 = Theme.SubText
 		Label.TextXAlignment = Enum.TextXAlignment.Left
 		Label.Text = text
@@ -339,7 +343,7 @@ local function buildButton(container, text, callback)
 	Btn.BorderSizePixel = 0
 	Btn.Text = text
 	Btn.Font = Theme.Font
-	Btn.TextSize = 12
+	Btn.TextSize = Theme.TextSize
 	Btn.TextColor3 = Theme.Text
 	Btn.Parent = container
 	stroke(Btn, Theme.Border)
@@ -381,7 +385,7 @@ local function buildCheckbox(container, text, default, callback, flag)
 	Label.BackgroundTransparency = 1
 	Label.Text = text
 	Label.Font = Theme.Font
-	Label.TextSize = 12
+	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.Text
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.Active = false
@@ -404,7 +408,6 @@ local function buildCheckbox(container, text, default, callback, flag)
 	return Holder, {Set = function(v) setState(v, false) end, Get = function() return state end}
 end
 
--- ImGUI Grabber Knob 'lu Single Slider
 local function buildSlider(container, text, min, max, default, callback, flag)
 	min = min or 0
 	max = max or 100
@@ -423,7 +426,7 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 	Track.Parent = Holder
 	stroke(Track, Theme.Border)
 
-	local GRABBER_WIDTH = 10
+	local grabWidth = Theme.GrabberWidth or 10
 	local rel = (value - min) / math.max(1e-9, max - min)
 
 	local Fill = Instance.new("Frame")
@@ -434,8 +437,8 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 	Fill.Parent = Track
 
 	local Grabber = Instance.new("Frame")
-	Grabber.Size = UDim2.new(0, GRABBER_WIDTH, 1, 0)
-	Grabber.Position = UDim2.new(rel, -rel * GRABBER_WIDTH, 0, 0)
+	Grabber.Size = UDim2.new(0, grabWidth, 1, 0)
+	Grabber.Position = UDim2.new(rel, -rel * grabWidth, 0, 0)
 	Grabber.BackgroundColor3 = Theme.Grabber
 	Grabber.BorderSizePixel = 0
 	Grabber.ZIndex = 3
@@ -448,7 +451,7 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 	ValueLabel.BackgroundTransparency = 1
 	ValueLabel.Text = text .. ": " .. tostring(value)
 	ValueLabel.Font = Theme.Font
-	ValueLabel.TextSize = 12
+	ValueLabel.TextSize = Theme.TextSize
 	ValueLabel.TextColor3 = Theme.Text
 	ValueLabel.TextXAlignment = Enum.TextXAlignment.Left
 	ValueLabel.ZIndex = 4
@@ -456,9 +459,11 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 
 	local function apply(v)
 		value = math.clamp(v, min, max)
+		grabWidth = Theme.GrabberWidth or 10
 		local r = (value - min) / math.max(1e-9, max - min)
 		Fill.Size = UDim2.new(r, 0, 1, 0)
-		Grabber.Position = UDim2.new(r, -r * GRABBER_WIDTH, 0, 0)
+		Grabber.Size = UDim2.new(0, grabWidth, 1, 0)
+		Grabber.Position = UDim2.new(r, -r * grabWidth, 0, 0)
 		ValueLabel.Text = text .. ": " .. tostring(value)
 		if callback then callback(value) end
 	end
@@ -480,7 +485,6 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 	return {Set = function(v) apply(v) end, Get = function() return value end}
 end
 
--- ImGUI Çift Tutamaçlı Range Slider (2 Değer Arası)
 local function buildRangeSlider(container, text, min, max, defaultLow, defaultHigh, callback, flag)
 	min, max = min or 0, max or 100
 	local valLow = defaultLow or min
@@ -499,7 +503,7 @@ local function buildRangeSlider(container, text, min, max, defaultLow, defaultHi
 	Track.Parent = Holder
 	stroke(Track, Theme.Border)
 
-	local GRABBER_WIDTH = 8
+	local grabWidth = Theme.GrabberWidth or 8
 	local rLow = (valLow - min) / math.max(1e-9, max - min)
 	local rHigh = (valHigh - min) / math.max(1e-9, max - min)
 
@@ -512,8 +516,8 @@ local function buildRangeSlider(container, text, min, max, defaultLow, defaultHi
 	Fill.Parent = Track
 
 	local GrabberLow = Instance.new("Frame")
-	GrabberLow.Size = UDim2.new(0, GRABBER_WIDTH, 1, 0)
-	GrabberLow.Position = UDim2.new(rLow, -rLow * GRABBER_WIDTH, 0, 0)
+	GrabberLow.Size = UDim2.new(0, grabWidth, 1, 0)
+	GrabberLow.Position = UDim2.new(rLow, -rLow * grabWidth, 0, 0)
 	GrabberLow.BackgroundColor3 = Theme.Grabber
 	GrabberLow.BorderSizePixel = 0
 	GrabberLow.ZIndex = 3
@@ -521,8 +525,8 @@ local function buildRangeSlider(container, text, min, max, defaultLow, defaultHi
 	stroke(GrabberLow, Theme.Border)
 
 	local GrabberHigh = Instance.new("Frame")
-	GrabberHigh.Size = UDim2.new(0, GRABBER_WIDTH, 1, 0)
-	GrabberHigh.Position = UDim2.new(rHigh, -rHigh * GRABBER_WIDTH, 0, 0)
+	GrabberHigh.Size = UDim2.new(0, grabWidth, 1, 0)
+	GrabberHigh.Position = UDim2.new(rHigh, -rHigh * grabWidth, 0, 0)
 	GrabberHigh.BackgroundColor3 = Theme.Grabber
 	GrabberHigh.BorderSizePixel = 0
 	GrabberHigh.ZIndex = 3
@@ -535,19 +539,22 @@ local function buildRangeSlider(container, text, min, max, defaultLow, defaultHi
 	ValueLabel.BackgroundTransparency = 1
 	ValueLabel.Text = text .. ": [" .. tostring(valLow) .. " - " .. tostring(valHigh) .. "]"
 	ValueLabel.Font = Theme.Font
-	ValueLabel.TextSize = 12
+	ValueLabel.TextSize = Theme.TextSize
 	ValueLabel.TextColor3 = Theme.Text
 	ValueLabel.TextXAlignment = Enum.TextXAlignment.Left
 	ValueLabel.ZIndex = 4
 	ValueLabel.Parent = Track
 
 	local function apply()
+		grabWidth = Theme.GrabberWidth or 8
 		rLow = (valLow - min) / math.max(1e-9, max - min)
 		rHigh = (valHigh - min) / math.max(1e-9, max - min)
 		Fill.Position = UDim2.new(rLow, 0, 0, 0)
 		Fill.Size = UDim2.new(rHigh - rLow, 0, 1, 0)
-		GrabberLow.Position = UDim2.new(rLow, -rLow * GRABBER_WIDTH, 0, 0)
-		GrabberHigh.Position = UDim2.new(rHigh, -rHigh * GRABBER_WIDTH, 0, 0)
+		GrabberLow.Size = UDim2.new(0, grabWidth, 1, 0)
+		GrabberHigh.Size = UDim2.new(0, grabWidth, 1, 0)
+		GrabberLow.Position = UDim2.new(rLow, -rLow * grabWidth, 0, 0)
+		GrabberHigh.Position = UDim2.new(rHigh, -rHigh * grabWidth, 0, 0)
 		ValueLabel.Text = text .. ": [" .. tostring(valLow) .. " - " .. tostring(valHigh) .. "]"
 		if callback then callback(valLow, valHigh) end
 	end
@@ -599,6 +606,88 @@ local function buildRangeSlider(container, text, min, max, defaultLow, defaultHi
 	}
 end
 
+-- NEW IMGUI CONTROL: Rotary Discrete Steps Knob Widget
+local function buildKnob(container, text, values, defaultIndex, callback, flag)
+	values = values or {"1", "2", "3"}
+	local index = math.clamp(defaultIndex or 1, 1, #values)
+
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(1, 0, 0, 26)
+	Holder.BackgroundTransparency = 1
+	Holder.Parent = container
+
+	local DialBox = Instance.new("Frame")
+	DialBox.Size = UDim2.new(0, 24, 0, 24)
+	DialBox.Position = UDim2.new(0, 0, 0.5, -12)
+	DialBox.BackgroundColor3 = Theme.Element
+	DialBox.BorderSizePixel = 0
+	DialBox.Active = true
+	DialBox.Parent = Holder
+	stroke(DialBox, Theme.Border)
+
+	local Pointer = Instance.new("Frame")
+	Pointer.Size = UDim2.new(0, 2, 0, 8)
+	Pointer.AnchorPoint = Vector2.new(0.5, 1)
+	Pointer.Position = UDim2.new(0.5, 0, 0.5, 0)
+	Pointer.BackgroundColor3 = Theme.Grabber
+	Pointer.BorderSizePixel = 0
+	Pointer.Parent = DialBox
+
+	local Label = Instance.new("TextLabel")
+	Label.Size = UDim2.new(1, -32, 1, 0)
+	Label.Position = UDim2.new(0, 32, 0, 0)
+	Label.BackgroundTransparency = 1
+	Label.Font = Theme.Font
+	Label.TextSize = Theme.TextSize
+	Label.TextColor3 = Theme.Text
+	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Parent = Holder
+
+	local function apply()
+		index = math.clamp(index, 1, #values)
+		local currentVal = values[index]
+		Label.Text = text .. ": " .. tostring(currentVal) .. " [" .. tostring(index) .. "/" .. tostring(#values) .. "]"
+
+		local stepFrac = (#values > 1) and ((index - 1) / (#values - 1)) or 0.5
+		local angle = -135 + (stepFrac * 270)
+		Pointer.Rotation = angle
+
+		if callback then callback(currentVal, index) end
+		pushAutoSave()
+	end
+
+	local startX, startIndex
+	DialBox.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			startX = input.Position.X
+			startIndex = index
+
+			local function updateDrag(x)
+				local delta = x - startX
+				local stepChange = math.floor(delta / 14)
+				index = math.clamp(startIndex + stepChange, 1, #values)
+				apply()
+			end
+
+			ActiveSlider = { Update = updateDrag, Release = pushAutoSave }
+		end
+	end)
+
+	registerFlag(flag, {
+		Get = function() return {index = index, value = values[index]} end,
+		Set = function(v)
+			if type(v) == "table" then index = v.index or 1 else index = tonumber(v) or 1 end
+			apply()
+		end
+	})
+
+	apply()
+	return {
+		Set = function(i) index = i; apply() end,
+		Get = function() return values[index], index end
+	}
+end
+
 local function buildTextbox(container, text, default, placeholder, callback, flag)
 	local value = default or ""
 	local Holder = Instance.new("Frame")
@@ -614,7 +703,7 @@ local function buildTextbox(container, text, default, placeholder, callback, fla
 	Box.PlaceholderText = placeholder or text
 	Box.ClearTextOnFocus = false
 	Box.Font = Theme.Font
-	Box.TextSize = 12
+	Box.TextSize = Theme.TextSize
 	Box.TextColor3 = Theme.Text
 	Box.PlaceholderColor3 = Theme.SubText
 	Box.TextXAlignment = Enum.TextXAlignment.Left
@@ -649,7 +738,7 @@ local function buildKeybind(container, text, default, callback, flag)
 	Label.BackgroundTransparency = 1
 	Label.Text = text
 	Label.Font = Theme.Font
-	Label.TextSize = 12
+	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.Text
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.Parent = Holder
@@ -735,7 +824,7 @@ local function buildProgressBar(container, text, min, max, default, format)
 	ValueLabel.BackgroundTransparency = 1
 	ValueLabel.Text = (text and (text .. ": ") or "") .. formatValue(format, value)
 	ValueLabel.Font = Theme.Font
-	ValueLabel.TextSize = 12
+	ValueLabel.TextSize = Theme.TextSize
 	ValueLabel.TextColor3 = Theme.Text
 	ValueLabel.TextXAlignment = Enum.TextXAlignment.Left
 	ValueLabel.ZIndex = 2
@@ -751,6 +840,7 @@ local function buildProgressBar(container, text, min, max, default, format)
 	}
 end
 
+-- Colorpicker With Direct RGB Numeric Input Textboxes Added
 local function buildColorpicker(container, text, default, callback, flag)
 	local color = default or Color3.fromRGB(255, 255, 255)
 	local isOpen = false
@@ -766,7 +856,7 @@ local function buildColorpicker(container, text, default, callback, flag)
 	Label.BackgroundTransparency = 1
 	Label.Text = text
 	Label.Font = Theme.Font
-	Label.TextSize = 12
+	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.Text
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.Parent = Holder
@@ -782,20 +872,31 @@ local function buildColorpicker(container, text, default, callback, flag)
 
 	local r, g, b = color.R * 255, color.G * 255, color.B * 255
 	local rFill, gFill, bFill
+	local rBox, gBox, bBox
 
 	local function applyColor(fromUser)
+		r = math.clamp(r, 0, 255)
+		g = math.clamp(g, 0, 255)
+		b = math.clamp(b, 0, 255)
+
 		color = Color3.fromRGB(math.floor(r), math.floor(g), math.floor(b))
 		PreviewBtn.BackgroundColor3 = color
+
 		if rFill then rFill.Size = UDim2.new(r / 255, 0, 1, 0) end
 		if gFill then gFill.Size = UDim2.new(g / 255, 0, 1, 0) end
 		if bFill then bFill.Size = UDim2.new(b / 255, 0, 1, 0) end
+
+		if rBox then rBox.Text = tostring(math.floor(r)) end
+		if gBox then gBox.Text = tostring(math.floor(g)) end
+		if bBox then bBox.Text = tostring(math.floor(b)) end
+
 		if callback then callback(color) end
 		if fromUser then pushAutoSave() end
 	end
 
-	local function makeChannelSlider(panel, labelText, yPos, initial, setter)
+	local function makeChannelRow(panel, labelText, yPos, initial, setter)
 		local L = Instance.new("TextLabel")
-		L.Size = UDim2.new(0, 16, 0, 16)
+		L.Size = UDim2.new(0, 14, 0, 16)
 		L.Position = UDim2.new(0, 6, 0, yPos)
 		L.BackgroundTransparency = 1
 		L.Text = labelText
@@ -805,8 +906,8 @@ local function buildColorpicker(container, text, default, callback, flag)
 		L.Parent = panel
 
 		local Track = Instance.new("Frame")
-		Track.Size = UDim2.new(1, -30, 0, 12)
-		Track.Position = UDim2.new(0, 24, 0, yPos + 2)
+		Track.Size = UDim2.new(1, -70, 0, 12)
+		Track.Position = UDim2.new(0, 22, 0, yPos + 2)
 		Track.BackgroundColor3 = Theme.Element
 		Track.BorderSizePixel = 0
 		Track.Active = true
@@ -818,6 +919,20 @@ local function buildColorpicker(container, text, default, callback, flag)
 		Fill.BackgroundColor3 = Theme.Accent
 		Fill.BorderSizePixel = 0
 		Fill.Parent = Track
+
+		-- Direct RGB Numeric Input Box
+		local ValBox = Instance.new("TextBox")
+		ValBox.Size = UDim2.new(0, 38, 0, 16)
+		ValBox.Position = UDim2.new(1, -42, 0, yPos)
+		ValBox.BackgroundColor3 = Theme.Element
+		ValBox.BorderSizePixel = 0
+		ValBox.Text = tostring(math.floor(initial))
+		ValBox.Font = Theme.Font
+		ValBox.TextSize = 11
+		ValBox.TextColor3 = Theme.Text
+		ValBox.ClearTextOnFocus = false
+		ValBox.Parent = panel
+		stroke(ValBox, Theme.Border)
 
 		Track.InputBegan:Connect(function(input)
 			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -831,20 +946,31 @@ local function buildColorpicker(container, text, default, callback, flag)
 			end
 		end)
 
-		return Fill
+		ValBox.FocusLost:Connect(function()
+			local num = tonumber(ValBox.Text)
+			if num then
+				setter(num)
+				applyColor(true)
+			else
+				ValBox.Text = tostring(math.floor(initial))
+			end
+		end)
+
+		return Fill, ValBox
 	end
 
 	local function closePanel()
 		isOpen = false
 		rFill, gFill, bFill = nil, nil, nil
+		rBox, gBox, bBox = nil, nil, nil
 	end
 
 	local function openPanel()
 		isOpen = true
-		openOverlayPanel(Holder, 80, function(panel)
-			rFill = makeChannelSlider(panel, "R", 6, r, function(v) r = v end)
-			gFill = makeChannelSlider(panel, "G", 28, g, function(v) g = v end)
-			bFill = makeChannelSlider(panel, "B", 50, b, function(v) b = v end)
+		openOverlayPanel(Holder, 86, function(panel)
+			rFill, rBox = makeChannelRow(panel, "R", 6, r, function(v) r = v end)
+			gFill, gBox = makeChannelRow(panel, "G", 30, g, function(v) g = v end)
+			bFill, bBox = makeChannelRow(panel, "B", 54, b, function(v) b = v end)
 		end, closePanel)
 	end
 
@@ -888,7 +1014,7 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	Btn.BorderSizePixel = 0
 	Btn.Text = text .. ": ..."
 	Btn.Font = Theme.Font
-	Btn.TextSize = 12
+	Btn.TextSize = Theme.TextSize
 	Btn.TextColor3 = Theme.Text
 	Btn.TextXAlignment = Enum.TextXAlignment.Left
 	Btn.Parent = Holder
@@ -923,7 +1049,7 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 				OptBtn.BorderSizePixel = 0
 				OptBtn.Text = tostring(opt)
 				OptBtn.Font = Theme.Font
-				OptBtn.TextSize = 12
+				OptBtn.TextSize = Theme.TextSize
 				OptBtn.TextColor3 = Theme.Text
 				OptBtn.TextXAlignment = Enum.TextXAlignment.Left
 				OptBtn.Parent = panel
@@ -985,7 +1111,7 @@ local function buildDropdown(container, text, options, default, callback, flag)
 	Btn.BorderSizePixel = 0
 	Btn.Text = text .. ": " .. tostring(selected)
 	Btn.Font = Theme.Font
-	Btn.TextSize = 12
+	Btn.TextSize = Theme.TextSize
 	Btn.TextColor3 = Theme.Text
 	Btn.TextXAlignment = Enum.TextXAlignment.Left
 	Btn.Parent = Holder
@@ -1018,7 +1144,7 @@ local function buildDropdown(container, text, options, default, callback, flag)
 				OptBtn.BorderSizePixel = 0
 				OptBtn.Text = tostring(opt)
 				OptBtn.Font = Theme.Font
-				OptBtn.TextSize = 12
+				OptBtn.TextSize = Theme.TextSize
 				OptBtn.TextColor3 = Theme.Text
 				OptBtn.TextXAlignment = Enum.TextXAlignment.Left
 				OptBtn.Parent = panel
@@ -1068,7 +1194,7 @@ local function buildSelectable(container, text, defaultSelected, callback)
 	Btn.BorderSizePixel = 0
 	Btn.Text = text
 	Btn.Font = Theme.Font
-	Btn.TextSize = 12
+	Btn.TextSize = Theme.TextSize
 	Btn.TextColor3 = Theme.Text
 	Btn.TextXAlignment = Enum.TextXAlignment.Left
 	Btn.Parent = container
@@ -1135,7 +1261,7 @@ local function buildRadioButton(container, text, active, callback, group)
 	Label.BackgroundTransparency = 1
 	Label.Text = text
 	Label.Font = Theme.Font
-	Label.TextSize = 12
+	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.Text
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.Active = false
@@ -1217,7 +1343,7 @@ local function buildSectionHeader(container, title, opts)
 	TitleLbl.Size = UDim2.new(1, -20, 1, 0)
 	TitleLbl.BackgroundTransparency = 1
 	TitleLbl.Font = Theme.Font
-	TitleLbl.TextSize = 12
+	TitleLbl.TextSize = Theme.TextSize
 	TitleLbl.TextColor3 = Theme.Text
 	TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
 	TitleLbl.Text = title
@@ -1233,14 +1359,14 @@ local function buildSectionHeader(container, title, opts)
 	Content.Parent = SectionFrame
 
 	local ContentPad = Instance.new("UIPadding")
-	ContentPad.PaddingLeft = UDim.new(0, 12)
+	ContentPad.PaddingLeft = UDim.new(0, Theme.IndentSpacing or 12)
 	ContentPad.PaddingTop = UDim.new(0, 4)
 	ContentPad.PaddingBottom = UDim.new(0, 4)
 	ContentPad.Parent = Content
 
 	local ContentLayout = Instance.new("UIListLayout")
 	ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	ContentLayout.Padding = UDim.new(0, 4)
+	ContentLayout.Padding = UDim.new(0, Theme.ItemSpacing or 4)
 	ContentLayout.Parent = Content
 
 	Header.MouseButton1Click:Connect(function()
@@ -1293,7 +1419,7 @@ local function buildTree(container, title)
 	TitleLbl.Size = UDim2.new(1, -16, 1, 0)
 	TitleLbl.BackgroundTransparency = 1
 	TitleLbl.Font = Theme.Font
-	TitleLbl.TextSize = 12
+	TitleLbl.TextSize = Theme.TextSize
 	TitleLbl.TextColor3 = Theme.Text
 	TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
 	TitleLbl.Text = title
@@ -1309,12 +1435,12 @@ local function buildTree(container, title)
 	Content.Parent = TreeFrame
 
 	local ContentPad = Instance.new("UIPadding")
-	ContentPad.PaddingLeft = UDim.new(0, 14)
+	ContentPad.PaddingLeft = UDim.new(0, Theme.IndentSpacing or 14)
 	ContentPad.Parent = Content
 
 	local ContentLayout = Instance.new("UIListLayout")
 	ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	ContentLayout.Padding = UDim.new(0, 4)
+	ContentLayout.Padding = UDim.new(0, Theme.ItemSpacing or 4)
 	ContentLayout.Parent = Content
 
 	Header.MouseButton1Click:Connect(function()
@@ -1388,6 +1514,9 @@ local function buildScope(container)
 	function Scope:AddRangeSlider(text, min, max, defaultLow, defaultHigh, callback, flag)
 		return buildRangeSlider(container, text, min, max, defaultLow, defaultHigh, callback, flag)
 	end
+	function Scope:AddKnob(text, values, defaultIndex, callback, flag)
+		return buildKnob(container, text, values, defaultIndex, callback, flag)
+	end
 	function Scope:AddTextbox(text, default, placeholder, callback, flag)
 		return buildTextbox(container, text, default, placeholder, callback, flag)
 	end
@@ -1432,7 +1561,7 @@ local function buildScope(container)
 
 		local GroupLayout = Instance.new("UIListLayout")
 		GroupLayout.SortOrder = Enum.SortOrder.LayoutOrder
-		GroupLayout.Padding = UDim.new(0, 4)
+		GroupLayout.Padding = UDim.new(0, Theme.ItemSpacing or 4)
 		GroupLayout.Parent = GroupFrame
 
 		return buildScope(GroupFrame)
@@ -1448,7 +1577,10 @@ end
 -- Window & MenuBar API
 -- ============================================================
 
-function Library:CreateWindow(title, pos, size)
+function Library:CreateWindow(title, pos, size, opts)
+	opts = opts or {}
+	local noMenuBar = opts.NoMenuBar or false
+
 	local screenGui = getScreenGui()
 	local offset = #Library.Windows * 20
 
@@ -1494,7 +1626,7 @@ function Library:CreateWindow(title, pos, size)
 	TitleLabel.Text = title
 	TitleLabel.Parent = TitleBar
 
-	-- Orijinal ImGUI Top MenuBar Yapısı (Menu, Examples, Tools)
+	-- Orijinal ImGUI Top MenuBar Yapısı
 	local MenuBar = Instance.new("Frame")
 	MenuBar.Name = "MenuBar"
 	MenuBar.Size = UDim2.new(1, 0, 0, 18)
@@ -1521,6 +1653,19 @@ function Library:CreateWindow(title, pos, size)
 	Body.BackgroundTransparency = 1
 	Body.ClipsDescendants = true
 	Body.Parent = Main
+
+	function Window:SetMenuBarVisible(visible)
+		MenuBar.Visible = visible
+		if visible then
+			Body.Size = UDim2.new(1, 0, 1, -40)
+			Body.Position = UDim2.new(0, 0, 0, 40)
+		else
+			Body.Size = UDim2.new(1, 0, 1, -22)
+			Body.Position = UDim2.new(0, 0, 0, 22)
+		end
+	end
+
+	Window:SetMenuBarVisible(not noMenuBar)
 
 	local Tabs = Instance.new("Frame")
 	Tabs.Name = "Tabs"
@@ -1602,7 +1747,6 @@ function Library:CreateWindow(title, pos, size)
 		end
 	end)
 
-	-- MenuBar Öğeleri Ekleme
 	local function addMenuItem(name, callback)
 		local MenuBtn = Instance.new("TextButton")
 		MenuBtn.Size = UDim2.new(0, 50, 1, 0)
@@ -1624,7 +1768,6 @@ function Library:CreateWindow(title, pos, size)
 	addMenuItem("Menu", function() end)
 	addMenuItem("Examples", function() end)
 
-	-- Tools Menüsü (Config Settings & Style Editor Açma)
 	addMenuItem("Tools", function(anchorBtn)
 		openOverlayPanel(anchorBtn, 42, function(panel)
 			local ListLayout = Instance.new("UIListLayout")
@@ -1695,7 +1838,7 @@ function Library:CreateWindow(title, pos, size)
 
 		local Layout = Instance.new("UIListLayout")
 		Layout.SortOrder = Enum.SortOrder.LayoutOrder
-		Layout.Padding = UDim.new(0, 4)
+		Layout.Padding = UDim.new(0, Theme.ItemSpacing or 4)
 		Layout.Parent = Page
 
 		local function select()
@@ -1738,10 +1881,9 @@ function Library:CreateWindow(title, pos, size)
 end
 
 -- ============================================================
--- Tools Menüsünden Açılan Bağımsız Pencereler
+-- Tools Pencereleri
 -- ============================================================
 
--- 1. Bağımsız Config Manager Penceresi
 function Library:CreateConfigWindow()
 	local ConfigWin = Library:CreateWindow("Config Manager", UDim2.new(0, 150, 0, 150), UDim2.new(0, 300, 0, 320))
 	local MainTab = ConfigWin:AddCategory("Configs")
@@ -1817,14 +1959,14 @@ function Library:CreateConfigWindow()
 	return ConfigWin
 end
 
--- 2. Bağımsız ImGUI Style Editor Penceresi (Canlı Tema Düzenleyici)
+-- Gelişmiş ImGUI Style Editor (Font, Font Size, Spacing, Color)
 function Library:CreateStyleEditorWindow()
-	local StyleWin = Library:CreateWindow("Style Editor", UDim2.new(0, 200, 0, 200), UDim2.new(0, 300, 0, 340))
-	local MainTab = StyleWin:AddCategory("Colors")
+	local StyleWin = Library:CreateWindow("Style Editor", UDim2.new(0, 200, 0, 150), UDim2.new(0, 320, 0, 420))
 
-	MainTab:AddLabel("ImGUI Canlı Tema Düzenleyici")
+	local ColorsTab = StyleWin:AddCategory("Colors")
+	ColorsTab:AddLabel("ImGUI Canlı Renk Düzenleyici")
 
-	MainTab:AddColorpicker("Header Color", Theme.Header, function(color)
+	ColorsTab:AddColorpicker("Header Color", Theme.Header, function(color)
 		Theme.Header = color
 		for _, win in ipairs(Library.Windows) do
 			local titleBar = win.Main and win.Main:FindFirstChild("TitleBar")
@@ -1832,24 +1974,35 @@ function Library:CreateStyleEditorWindow()
 		end
 	end)
 
-	MainTab:AddColorpicker("Background Color", Theme.Background, function(color)
-		Theme.Background = color
+	ColorsTab:AddColorpicker("Background Color", Theme.Background, function(color) Theme.Background = color end)
+	ColorsTab:AddColorpicker("Accent Color", Theme.Accent, function(color) Theme.Accent = color end)
+	ColorsTab:AddColorpicker("Element Color", Theme.Element, function(color) Theme.Element = color end)
+	ColorsTab:AddColorpicker("Grabber Knob Color", Theme.Grabber, function(color) Theme.Grabber = color end)
+	ColorsTab:AddColorpicker("Text Color", Theme.Text, function(color) Theme.Text = color end)
+
+	local SizesTab = StyleWin:AddCategory("Style")
+	SizesTab:AddLabel("Boyut ve Yazı Tipi Düzenleyici")
+
+	SizesTab:AddDropdown("Font Type", {"RobotoMono", "Code", "SourceSans", "Gotham", "Ubuntu"}, "RobotoMono", function(fontName)
+		if Enum.Font[fontName] then
+			Theme.Font = Enum.Font[fontName]
+		end
 	end)
 
-	MainTab:AddColorpicker("Accent Color", Theme.Accent, function(color)
-		Theme.Accent = color
+	SizesTab:AddSlider("Font Size", 10, 18, Theme.TextSize or 12, function(v)
+		Theme.TextSize = v
 	end)
 
-	MainTab:AddColorpicker("Element Color", Theme.Element, function(color)
-		Theme.Element = color
+	SizesTab:AddSlider("Item Spacing", 0, 12, Theme.ItemSpacing or 4, function(v)
+		Theme.ItemSpacing = v
 	end)
 
-	MainTab:AddColorpicker("Grabber Knob Color", Theme.Grabber, function(color)
-		Theme.Grabber = color
+	SizesTab:AddSlider("Indent Spacing", 4, 24, Theme.IndentSpacing or 12, function(v)
+		Theme.IndentSpacing = v
 	end)
 
-	MainTab:AddColorpicker("Text Color", Theme.Text, function(color)
-		Theme.Text = color
+	SizesTab:AddSlider("Slider Grab Min Size", 4, 20, Theme.GrabberWidth or 10, function(v)
+		Theme.GrabberWidth = v
 	end)
 
 	return StyleWin
