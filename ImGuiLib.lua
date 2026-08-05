@@ -102,7 +102,7 @@ TooltipFrame.Font = Theme.Font
 TooltipFrame.TextSize = 11
 TooltipFrame.TextColor3 = Theme.Text
 TooltipFrame.Visible = false
-TooltipFrame.ZIndex = 999
+TooltipFrame.ZIndex = 9999
 TooltipFrame.Parent = getScreenGui()
 stroke(TooltipFrame, Theme.Border)
 
@@ -126,6 +126,109 @@ local function bindTooltip(inst, text)
 	inst.MouseLeave:Connect(function()
 		TooltipFrame.Visible = false
 	end)
+end
+
+-- ============================================================
+-- Overlay Layer + Popup Helpers
+-- Dropdown / MultiDropdown / Colorpicker panels used to live
+-- INSIDE the scrolling category page, which meant Roblox's
+-- ScrollingFrame clipping could cut them off entirely (they'd
+-- "not open" visually and not be clickable). They now render in
+-- a top-level overlay layer that is never clipped.
+-- ============================================================
+
+local OverlayLayer = Instance.new("Frame")
+OverlayLayer.Name = "OverlayLayer"
+OverlayLayer.Size = UDim2.new(1, 0, 1, 0)
+OverlayLayer.BackgroundTransparency = 1
+OverlayLayer.ZIndex = 5000
+OverlayLayer.Parent = getScreenGui()
+
+local ActivePopup = nil
+
+local function closeActivePopup()
+	if ActivePopup then
+		local popup = ActivePopup
+		ActivePopup = nil
+		if popup.onClose then popup.onClose() end
+		if popup.catcher then popup.catcher:Destroy() end
+		if popup.panel then popup.panel:Destroy() end
+	end
+end
+
+-- Opens a floating panel anchored below (or above, if there's no
+-- room) the given instance. Closes any previously open popup.
+-- buildFn(panel) populates the panel's contents.
+-- onClose() is called whenever the popup closes for any reason.
+local function openOverlayPanel(anchor, height, buildFn, onClose)
+	closeActivePopup()
+
+	local catcher = Instance.new("TextButton")
+	catcher.Size = UDim2.new(1, 0, 1, 0)
+	catcher.BackgroundTransparency = 1
+	catcher.Text = ""
+	catcher.AutoButtonColor = false
+	catcher.ZIndex = OverlayLayer.ZIndex
+	catcher.Parent = OverlayLayer
+
+	local panel = Instance.new("Frame")
+	panel.BackgroundColor3 = Theme.Background
+	panel.BorderSizePixel = 0
+	panel.ZIndex = OverlayLayer.ZIndex + 1
+	panel.Parent = OverlayLayer
+	stroke(panel, Theme.Border)
+
+	local absPos = anchor.AbsolutePosition
+	local absSize = anchor.AbsoluteSize
+	local screenSize = OverlayLayer.AbsoluteSize
+
+	local posX = absPos.X
+	local posY = absPos.Y + absSize.Y + 2
+	if posY + height > screenSize.Y then
+		posY = absPos.Y - height - 2
+	end
+	if posX + absSize.X > screenSize.X then
+		posX = math.max(0, screenSize.X - absSize.X)
+	end
+
+	panel.Position = UDim2.new(0, posX, 0, posY)
+	panel.Size = UDim2.new(0, absSize.X, 0, height)
+
+	catcher.MouseButton1Click:Connect(function()
+		closeActivePopup()
+	end)
+
+	buildFn(panel)
+
+	ActivePopup = { catcher = catcher, panel = panel, onClose = onClose }
+end
+
+-- Binds the same "activate" callback to every instance passed in.
+-- Used for widgets like Checkbox/Radio/Section where the clickable
+-- area is a button with decorative children (icon + label) drawn on
+-- top of it. Binding to all of them (with a short debounce so a
+-- single physical click can't double-fire) guarantees the widget
+-- reacts no matter which visual layer actually receives the click.
+local function bindActivation(objects, callback)
+	local lastFire = 0
+	local function fire()
+		local now = os.clock()
+		if now - lastFire < 0.05 then return end
+		lastFire = now
+		callback()
+	end
+	for _, obj in ipairs(objects) do
+		if obj:IsA("GuiButton") then
+			obj.MouseButton1Click:Connect(fire)
+		else
+			obj.Active = true
+			obj.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+					fire()
+				end
+			end)
+		end
+	end
 end
 
 local function hasFileApi()
@@ -238,6 +341,12 @@ local function buildSeparator(container, text)
 	Layout.Padding = UDim.new(0, 6)
 	Layout.Parent = Row
 
+	local Line = Instance.new("Frame")
+	Line.LayoutOrder = 2
+	Line.BackgroundColor3 = Theme.SeparatorLine
+	Line.BorderSizePixel = 0
+	Line.Parent = Row
+
 	if text then
 		local Label = Instance.new("TextLabel")
 		Label.LayoutOrder = 1
@@ -250,15 +359,14 @@ local function buildSeparator(container, text)
 		Label.TextXAlignment = Enum.TextXAlignment.Left
 		Label.Text = text
 		Label.Parent = Row
-	end
 
-	local Line = Instance.new("Frame")
-	Line.LayoutOrder = 2
-	Line.Size = UDim2.new(0, 0, 0, 1)
-	Line.BackgroundColor3 = Theme.SeparatorLine
-	Line.BorderSizePixel = 0
-	Line.Parent = Row
-	flexify(Line)
+		-- Short trailing tick after the label instead of filling the whole row
+		Line.Size = UDim2.new(0, 24, 0, 1)
+	else
+		-- No label: keep it as a full-width divider
+		Line.Size = UDim2.new(0, 0, 0, 1)
+		flexify(Line)
+	end
 
 	return Row
 end
@@ -323,7 +431,7 @@ local function buildCheckbox(container, text, default, callback, flag)
 		if fromUser then pushAutoSave() end
 	end
 
-	Holder.MouseButton1Click:Connect(function()
+	bindActivation({ Holder, Box, Label }, function()
 		setState(not state, true)
 	end)
 
@@ -347,6 +455,7 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 	Track.Size = UDim2.new(1, 0, 1, 0)
 	Track.BackgroundColor3 = Theme.Element
 	Track.BorderSizePixel = 0
+	Track.Active = true
 	Track.Parent = Holder
 	stroke(Track, Theme.Border)
 
@@ -468,6 +577,12 @@ local function buildKeybind(container, text, default, callback, flag)
 	local conn
 	conn = UIS.InputBegan:Connect(function(input, gpe)
 		if listening and input.UserInputType == Enum.UserInputType.Keyboard then
+			if input.KeyCode == Enum.KeyCode.Escape then
+				-- Cancel binding, keep the previous key
+				listening = false
+				KeyBtn.Text = key and key.Name or "None"
+				return
+			end
 			key = input.KeyCode
 			KeyBtn.Text = key.Name
 			listening = false
@@ -491,7 +606,8 @@ local function buildKeybind(container, text, default, callback, flag)
 		Set = function(v)
 			key = Enum.KeyCode[v]
 			KeyBtn.Text = key and key.Name or "None"
-		end
+		end,
+		Get = function() return key and key.Name or "None" end,
 	}
 end
 
@@ -539,14 +655,16 @@ local function buildProgressBar(container, text, min, max, default, format)
 	}
 end
 
+-- Colorpicker: the RGB panel now opens in the overlay layer
+-- (anchored to the whole widget row) instead of being nested
+-- inside the scrolling page, so it can no longer get clipped.
 local function buildColorpicker(container, text, default, callback, flag)
 	local color = default or Color3.fromRGB(255, 255, 255)
-	local open = false
+	local isOpen = false
 
 	local Holder = Instance.new("Frame")
 	Holder.Size = UDim2.new(1, 0, 0, 22)
 	Holder.BackgroundTransparency = 1
-	Holder.ZIndex = 1
 	Holder.Parent = container
 
 	local Label = Instance.new("TextLabel")
@@ -568,17 +686,20 @@ local function buildColorpicker(container, text, default, callback, flag)
 	PreviewBtn.Parent = Holder
 	stroke(PreviewBtn, Theme.Border)
 
-	local Panel = Instance.new("Frame")
-	Panel.Size = UDim2.new(1, 0, 0, 80)
-	Panel.Position = UDim2.new(0, 0, 1, 2)
-	Panel.BackgroundColor3 = Theme.Background
-	Panel.BorderSizePixel = 0
-	Panel.Visible = false
-	Panel.ZIndex = 100
-	Panel.Parent = Holder
-	stroke(Panel, Theme.Border)
+	local r, g, b = color.R * 255, color.G * 255, color.B * 255
+	local rFill, gFill, bFill
 
-	local function makeSlider(labelText, yPos, initial)
+	local function applyColor(fromUser)
+		color = Color3.fromRGB(math.floor(r), math.floor(g), math.floor(b))
+		PreviewBtn.BackgroundColor3 = color
+		if rFill then rFill.Size = UDim2.new(r / 255, 0, 1, 0) end
+		if gFill then gFill.Size = UDim2.new(g / 255, 0, 1, 0) end
+		if bFill then bFill.Size = UDim2.new(b / 255, 0, 1, 0) end
+		if callback then callback(color) end
+		if fromUser then pushAutoSave() end
+	end
+
+	local function makeChannelSlider(panel, labelText, yPos, initial, setter)
 		local L = Instance.new("TextLabel")
 		L.Size = UDim2.new(0, 16, 0, 16)
 		L.Position = UDim2.new(0, 6, 0, yPos)
@@ -587,91 +708,85 @@ local function buildColorpicker(container, text, default, callback, flag)
 		L.Font = Theme.Font
 		L.TextSize = 11
 		L.TextColor3 = Theme.SubText
-		L.ZIndex = 101
-		L.Parent = Panel
+		L.Parent = panel
 
 		local Track = Instance.new("Frame")
 		Track.Size = UDim2.new(1, -30, 0, 12)
 		Track.Position = UDim2.new(0, 24, 0, yPos + 2)
 		Track.BackgroundColor3 = Theme.Element
 		Track.BorderSizePixel = 0
-		Track.ZIndex = 101
-		Track.Parent = Panel
+		Track.Active = true
+		Track.Parent = panel
 		stroke(Track, Theme.Border)
 
 		local Fill = Instance.new("Frame")
 		Fill.Size = UDim2.new(initial / 255, 0, 1, 0)
 		Fill.BackgroundColor3 = Theme.Accent
 		Fill.BorderSizePixel = 0
-		Fill.ZIndex = 101
 		Fill.Parent = Track
 
-		return Track, Fill
-	end
-
-	local rTrack, rFill = makeSlider("R", 6, color.R * 255)
-	local gTrack, gFill = makeSlider("G", 28, color.G * 255)
-	local bTrack, bFill = makeSlider("B", 50, color.B * 255)
-
-	local r, g, b = color.R * 255, color.G * 255, color.B * 255
-	local function update(fromUser)
-		color = Color3.fromRGB(math.floor(r), math.floor(g), math.floor(b))
-		PreviewBtn.BackgroundColor3 = color
-		rFill.Size = UDim2.new(r / 255, 0, 1, 0)
-		gFill.Size = UDim2.new(g / 255, 0, 1, 0)
-		bFill.Size = UDim2.new(b / 255, 0, 1, 0)
-		if callback then callback(color) end
-		if fromUser then pushAutoSave() end
-	end
-
-	local function bind(track, setter)
-		track.InputBegan:Connect(function(input)
+		Track.InputBegan:Connect(function(input)
 			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 				local function setFromX(x)
-					local rel = math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+					local rel = math.clamp((x - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
 					setter(rel * 255)
-					update(false)
+					applyColor(false)
 				end
 				setFromX(input.Position.X)
-				ActiveSlider = {Update = setFromX, Release = function() update(true) end}
+				ActiveSlider = { Update = setFromX, Release = function() applyColor(true) end }
 			end
 		end)
+
+		return Fill
 	end
-	bind(rTrack, function(v) r = v end)
-	bind(gTrack, function(v) g = v end)
-	bind(bTrack, function(v) b = v end)
+
+	local function closePanel()
+		isOpen = false
+		rFill, gFill, bFill = nil, nil, nil
+	end
+
+	local function openPanel()
+		isOpen = true
+		openOverlayPanel(Holder, 80, function(panel)
+			rFill = makeChannelSlider(panel, "R", 6, r, function(v) r = v end)
+			gFill = makeChannelSlider(panel, "G", 28, g, function(v) g = v end)
+			bFill = makeChannelSlider(panel, "B", 50, b, function(v) b = v end)
+		end, closePanel)
+	end
 
 	PreviewBtn.MouseButton1Click:Connect(function()
-		open = not open
-		Panel.Visible = open
-		Holder.ZIndex = open and 100 or 1
+		if isOpen then
+			closeActivePopup()
+		else
+			openPanel()
+		end
 	end)
 
 	registerFlag(flag, {
 		Get = function() return {r = color.R, g = color.G, b = color.B} end,
 		Set = function(v)
 			r, g, b = v.r * 255, v.g * 255, v.b * 255
-			update(false)
+			applyColor(false)
 		end
 	})
 	if callback then callback(color) end
 
 	return {Set = function(c)
 		r, g, b = c.R * 255, c.G * 255, c.B * 255
-		update(false)
+		applyColor(false)
 	end}
 end
 
+-- MultiDropdown: option list now opens in the overlay layer.
 local function buildMultiDropdown(container, text, options, defaults, callback, flag)
 	local selected = {}
 	for _, v in ipairs(defaults or {}) do selected[v] = true end
-	local open = false
 	local currentOptions = options
+	local isOpen = false
 
 	local Holder = Instance.new("Frame")
 	Holder.Size = UDim2.new(1, 0, 0, 22)
 	Holder.BackgroundTransparency = 1
-	Holder.ZIndex = 1
 	Holder.Parent = container
 
 	local Btn = Instance.new("TextButton")
@@ -690,18 +805,6 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	Pad.PaddingLeft = UDim.new(0, 6)
 	Pad.Parent = Btn
 
-	local ListHolder = Instance.new("Frame")
-	ListHolder.Position = UDim2.new(0, 0, 1, 2)
-	ListHolder.BackgroundColor3 = Theme.Background
-	ListHolder.BorderSizePixel = 0
-	ListHolder.Visible = false
-	ListHolder.ZIndex = 100
-	ListHolder.Parent = Holder
-	stroke(ListHolder, Theme.Border)
-
-	local ListLayout = Instance.new("UIListLayout")
-	ListLayout.Parent = ListHolder
-
 	local function refreshLabel()
 		local names = {}
 		for _, opt in ipairs(currentOptions) do
@@ -709,77 +812,79 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 		end
 		Btn.Text = text .. ": " .. (#names > 0 and table.concat(names, ", ") or "None")
 	end
-
-	local function build()
-		for _, c in ipairs(ListHolder:GetChildren()) do
-			if c:IsA("TextButton") then c:Destroy() end
-		end
-		ListHolder.Size = UDim2.new(1, 0, 0, #currentOptions * 20)
-		for _, opt in ipairs(currentOptions) do
-			local OptBtn = Instance.new("TextButton")
-			OptBtn.Size = UDim2.new(1, 0, 0, 20)
-			OptBtn.BackgroundColor3 = selected[opt] and Theme.Accent or Theme.Element
-			OptBtn.BorderSizePixel = 0
-			OptBtn.Text = tostring(opt)
-			OptBtn.Font = Theme.Font
-			OptBtn.TextSize = 12
-			OptBtn.TextColor3 = Theme.Text
-			OptBtn.TextXAlignment = Enum.TextXAlignment.Left
-			OptBtn.ZIndex = 101
-			OptBtn.Parent = ListHolder
-
-			local OPad = Instance.new("UIPadding")
-			OPad.PaddingLeft = UDim.new(0, 6)
-			OPad.Parent = OptBtn
-
-			OptBtn.MouseButton1Click:Connect(function()
-				selected[opt] = not selected[opt] or nil
-				OptBtn.BackgroundColor3 = selected[opt] and Theme.Accent or Theme.Element
-				refreshLabel()
-				if callback then callback(selected) end
-				pushAutoSave()
-			end)
-		end
-	end
-
-	build()
 	refreshLabel()
 
+	local function closePanel()
+		isOpen = false
+	end
+
+	local function openPanel()
+		isOpen = true
+		openOverlayPanel(Btn, #currentOptions * 20, function(panel)
+			local ListLayout = Instance.new("UIListLayout")
+			ListLayout.Parent = panel
+			for _, opt in ipairs(currentOptions) do
+				local OptBtn = Instance.new("TextButton")
+				OptBtn.Size = UDim2.new(1, 0, 0, 20)
+				OptBtn.BackgroundColor3 = selected[opt] and Theme.Accent or Theme.Element
+				OptBtn.BorderSizePixel = 0
+				OptBtn.Text = tostring(opt)
+				OptBtn.Font = Theme.Font
+				OptBtn.TextSize = 12
+				OptBtn.TextColor3 = Theme.Text
+				OptBtn.TextXAlignment = Enum.TextXAlignment.Left
+				OptBtn.Parent = panel
+
+				local OPad = Instance.new("UIPadding")
+				OPad.PaddingLeft = UDim.new(0, 6)
+				OPad.Parent = OptBtn
+
+				OptBtn.MouseButton1Click:Connect(function()
+					selected[opt] = not selected[opt] or nil
+					OptBtn.BackgroundColor3 = selected[opt] and Theme.Accent or Theme.Element
+					refreshLabel()
+					if callback then callback(selected) end
+					pushAutoSave()
+				end)
+			end
+		end, closePanel)
+	end
+
 	Btn.MouseButton1Click:Connect(function()
-		open = not open
-		ListHolder.Visible = open
-		Holder.ZIndex = open and 100 or 1
+		if isOpen then
+			closeActivePopup()
+		else
+			openPanel()
+		end
 	end)
 
 	registerFlag(flag, {
 		Get = function() return selected end,
 		Set = function(v)
 			selected = v
-			build()
 			refreshLabel()
 		end
 	})
 	if callback then callback(selected) end
 
 	return {
-		Set = function(v) selected = v; build(); refreshLabel() end,
+		Set = function(v) selected = v; refreshLabel() end,
 		Refresh = function(newOptions)
 			currentOptions = newOptions
-			build()
 			refreshLabel()
 		end,
 	}
 end
 
+-- Dropdown: option list now opens in the overlay layer.
 local function buildDropdown(container, text, options, default, callback, flag)
 	local selected = default or options[1]
-	local open = false
 	local currentOptions = options
+	local isOpen = false
 
 	local Holder = Instance.new("Frame")
 	Holder.Size = UDim2.new(1, 0, 0, 22)
 	Holder.BackgroundTransparency = 1
-	Holder.ZIndex = 1
 	Holder.Parent = container
 
 	local Btn = Instance.new("TextButton")
@@ -798,65 +903,55 @@ local function buildDropdown(container, text, options, default, callback, flag)
 	Pad.PaddingLeft = UDim.new(0, 6)
 	Pad.Parent = Btn
 
-	local ListHolder = Instance.new("Frame")
-	ListHolder.Position = UDim2.new(0, 0, 1, 2)
-	ListHolder.BackgroundColor3 = Theme.Background
-	ListHolder.BorderSizePixel = 0
-	ListHolder.Visible = false
-	ListHolder.ZIndex = 100
-	ListHolder.Parent = Holder
-	stroke(ListHolder, Theme.Border)
-
-	local ListLayout = Instance.new("UIListLayout")
-	ListLayout.Parent = ListHolder
-
 	local function selectOption(opt, fromUser)
 		selected = opt
 		Btn.Text = text .. ": " .. tostring(selected)
-		ListHolder.Visible = false
-		open = false
-		Holder.ZIndex = 1
 		if callback then callback(opt) end
 		if fromUser then pushAutoSave() end
 	end
 
-	local function build()
-		for _, child in ipairs(ListHolder:GetChildren()) do
-			if child:IsA("TextButton") then child:Destroy() end
-		end
-		ListHolder.Size = UDim2.new(1, 0, 0, #currentOptions * 20)
-		for _, opt in ipairs(currentOptions) do
-			local OptBtn = Instance.new("TextButton")
-			OptBtn.Size = UDim2.new(1, 0, 0, 20)
-			OptBtn.BackgroundColor3 = Theme.Element
-			OptBtn.BorderSizePixel = 0
-			OptBtn.Text = tostring(opt)
-			OptBtn.Font = Theme.Font
-			OptBtn.TextSize = 12
-			OptBtn.TextColor3 = Theme.Text
-			OptBtn.TextXAlignment = Enum.TextXAlignment.Left
-			OptBtn.ZIndex = 101
-			OptBtn.Parent = ListHolder
-
-			local OPad = Instance.new("UIPadding")
-			OPad.PaddingLeft = UDim.new(0, 6)
-			OPad.Parent = OptBtn
-
-			OptBtn.MouseEnter:Connect(function() OptBtn.BackgroundColor3 = Theme.Accent end)
-			OptBtn.MouseLeave:Connect(function() OptBtn.BackgroundColor3 = Theme.Element end)
-
-			OptBtn.MouseButton1Click:Connect(function()
-				selectOption(opt, true)
-			end)
-		end
+	local function closePanel()
+		isOpen = false
 	end
 
-	build()
+	local function openPanel()
+		isOpen = true
+		openOverlayPanel(Btn, #currentOptions * 20, function(panel)
+			local ListLayout = Instance.new("UIListLayout")
+			ListLayout.Parent = panel
+			for _, opt in ipairs(currentOptions) do
+				local OptBtn = Instance.new("TextButton")
+				OptBtn.Size = UDim2.new(1, 0, 0, 20)
+				OptBtn.BackgroundColor3 = Theme.Element
+				OptBtn.BorderSizePixel = 0
+				OptBtn.Text = tostring(opt)
+				OptBtn.Font = Theme.Font
+				OptBtn.TextSize = 12
+				OptBtn.TextColor3 = Theme.Text
+				OptBtn.TextXAlignment = Enum.TextXAlignment.Left
+				OptBtn.Parent = panel
+
+				local OPad = Instance.new("UIPadding")
+				OPad.PaddingLeft = UDim.new(0, 6)
+				OPad.Parent = OptBtn
+
+				OptBtn.MouseEnter:Connect(function() OptBtn.BackgroundColor3 = Theme.Accent end)
+				OptBtn.MouseLeave:Connect(function() OptBtn.BackgroundColor3 = Theme.Element end)
+
+				OptBtn.MouseButton1Click:Connect(function()
+					selectOption(opt, true)
+					closeActivePopup()
+				end)
+			end
+		end, closePanel)
+	end
 
 	Btn.MouseButton1Click:Connect(function()
-		open = not open
-		ListHolder.Visible = open
-		Holder.ZIndex = open and 100 or 1
+		if isOpen then
+			closeActivePopup()
+		else
+			openPanel()
+		end
 	end)
 
 	registerFlag(flag, {Get = function() return selected end, Set = function(v) selectOption(v, false) end})
@@ -867,7 +962,6 @@ local function buildDropdown(container, text, options, default, callback, flag)
 		Get = function() return selected end,
 		Refresh = function(newOptions)
 			currentOptions = newOptions
-			build()
 			selectOption(newOptions[1], false)
 		end
 	}
@@ -913,7 +1007,13 @@ local function buildSelectable(container, text, defaultSelected, callback)
 	}
 end
 
-local function buildRadioButton(container, text, active, callback)
+-- Radio buttons now support an optional `group` name. Selecting a
+-- radio button in a group automatically deselects the others in
+-- the same group (this didn't exist before - each radio was fully
+-- independent, so you could never really "choose one of many").
+local RadioGroups = {}
+
+local function buildRadioButton(container, text, active, callback, group)
 	local state = active or false
 
 	local Holder = Instance.new("TextButton")
@@ -956,13 +1056,24 @@ local function buildRadioButton(container, text, active, callback)
 		if callback then callback(state) end
 	end
 
-	Holder.MouseButton1Click:Connect(function()
-		if not state then
-			setState(true)
+	local api = { Set = function(v) setState(v) end, Get = function() return state end }
+
+	if group then
+		RadioGroups[group] = RadioGroups[group] or {}
+		table.insert(RadioGroups[group], api)
+	end
+
+	bindActivation({ Holder, Outer, Dot, Label }, function()
+		if state then return end
+		if group and RadioGroups[group] then
+			for _, other in ipairs(RadioGroups[group]) do
+				if other ~= api then other.Set(false) end
+			end
 		end
+		setState(true)
 	end)
 
-	return { Set = setState, Get = function() return state end }
+	return api
 end
 
 -- ============================================================
@@ -1039,7 +1150,7 @@ local function buildSectionHeader(container, title, opts)
 	ContentLayout.Padding = UDim.new(0, 4)
 	ContentLayout.Parent = Content
 
-	Header.MouseButton1Click:Connect(function()
+	bindActivation({ Header, Arrow, TitleLbl }, function()
 		collapsed = not collapsed
 		Content.Visible = not collapsed
 		Arrow.Text = collapsed and "▶" or "▼"
@@ -1111,7 +1222,7 @@ local function buildTree(container, title)
 	ContentLayout.Padding = UDim.new(0, 4)
 	ContentLayout.Parent = Content
 
-	Header.MouseButton1Click:Connect(function()
+	bindActivation({ Header, Arrow, TitleLbl }, function()
 		collapsed = not collapsed
 		Content.Visible = not collapsed
 		Arrow.Text = collapsed and "▶" or "▼"
@@ -1200,8 +1311,8 @@ local function buildScope(container)
 	function Scope:AddSelectable(text, defaultSelected, callback)
 		return buildSelectable(container, text, defaultSelected, callback)
 	end
-	function Scope:AddRadioButton(text, active, callback)
-		return buildRadioButton(container, text, active, callback)
+	function Scope:AddRadioButton(text, active, callback, group)
+		return buildRadioButton(container, text, active, callback, group)
 	end
 	function Scope:AddRow(height, gap)
 		return buildRow(container, height, gap)
@@ -1324,6 +1435,13 @@ function Library:CreateWindow(title, pos, size)
 		end
 	end)
 
+	-- Close any open dropdown/colorpicker popup before a drag starts,
+	-- so it doesn't end up floating in the wrong place.
+	TitleBar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			closeActivePopup()
+		end
+	end)
 	makeDraggable(TitleBar, Main)
 
 	local ResizeHandle = Instance.new("Frame")
@@ -1426,6 +1544,7 @@ function Library:CreateWindow(title, pos, size)
 	end
 
 	function Window:Destroy()
+		closeActivePopup()
 		Main:Destroy()
 		for i, w in ipairs(Library.Windows) do
 			if w == Window then table.remove(Library.Windows, i) break end
