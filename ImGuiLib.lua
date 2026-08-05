@@ -530,17 +530,33 @@ local function attachContextMenu(inst, itemsFn)
 			IPad.PaddingLeft = UDim.new(0, 6)
 			IPad.Parent = Btn
 
-			Btn.MouseEnter:Connect(function() Btn.BackgroundColor3 = Theme.Accent end)
-			Btn.MouseLeave:Connect(function() Btn.BackgroundColor3 = Theme.Element end)
+			Btn.MouseEnter:Connect(function()
+				if Btn.BackgroundColor3 ~= Theme.Accent then
+					Btn.BackgroundColor3 = Theme.ElementHover
+				end
+			end)
+			Btn.MouseLeave:Connect(function()
+				if Btn.BackgroundColor3 ~= Theme.Accent then
+					Btn.BackgroundColor3 = Theme.Element
+				end
+			end)
 			Btn.MouseButton1Click:Connect(function()
-				closeActivePopup()
-				safeCall(item.Callback)
+				if item.PreventClose then
+					safeCall(item.Callback, Btn)
+				else
+					closeActivePopup()
+					safeCall(item.Callback, Btn)
+				end
 			end)
 		end
 
 		catcher.MouseButton1Click:Connect(function() closeActivePopup() end)
 
-		ActivePopup = { catcher = catcher, panel = panel, onClose = nil }
+		ActivePopup = { catcher = catcher, panel = panel, onClose = function()
+			for _, item in ipairs(items) do
+				if item.OnClose then safeCall(item.OnClose) end
+			end
+		end }
 	end)
 end
 
@@ -830,29 +846,56 @@ local function buildCheckbox(container, text, default, callback, flag, bindEnabl
 	attachContextMenu(Holder, function()
 		local items = {{Text = "Reset to Default", Callback = function() setState(defaultVal, true) end}}
 		if bindEnabled then
-			table.insert(items, {Text = "Bind Key: " .. (bindKey and bindKey.Name or "None"), Callback = function()
-				if listeningBind then return end
-				listeningBind = true
-				Library:Notify("Keybind", "Basmak istediğiniz tuşa basın...", 3, "info")
-				if bindConn then bindConn:Disconnect() end
-				bindConn = UIS.InputBegan:Connect(function(bindInput)
-					if bindInput.UserInputType == Enum.UserInputType.Keyboard then
-						setBindKey(bindInput.KeyCode)
-						listeningBind = false
-						Library:Notify("Keybind", "Tuş atandı: " .. bindInput.KeyCode.Name, 2, "success")
-						if bindConn then bindConn:Disconnect(); bindConn = nil end
-					elseif bindInput.UserInputType == Enum.UserInputType.MouseButton1 then
-						listeningBind = false
-						Library:Notify("Keybind", "Tuş ataması iptal edildi.", 2, "warning")
-						if bindConn then bindConn:Disconnect(); bindConn = nil end
+			table.insert(items, {
+				Text = "Bind Key: " .. (bindKey and bindKey.Name or "None"),
+				PreventClose = true,
+				OnClose = function()
+					if bindConn then bindConn:Disconnect(); bindConn = nil end
+					listeningBind = false
+				end,
+				Callback = function(btn)
+					if listeningBind then return end
+					listeningBind = true
+					if btn then
+						btn.Text = "Bind Key: Tuşa basın..."
+						btn.BackgroundColor3 = Theme.Accent
 					end
-				end)
-			end})
+
+					if bindConn then bindConn:Disconnect() end
+					bindConn = UIS.InputBegan:Connect(function(bindInput)
+						if bindInput.UserInputType == Enum.UserInputType.Keyboard then
+							if bindInput.KeyCode == Enum.KeyCode.Escape then
+								listeningBind = false
+								if btn and btn.Parent then
+									btn.Text = "Bind Key: " .. (bindKey and bindKey.Name or "None")
+									btn.BackgroundColor3 = Theme.Element
+								end
+								if bindConn then bindConn:Disconnect(); bindConn = nil end
+								task.delay(0.1, closeActivePopup)
+								return
+							end
+
+							setBindKey(bindInput.KeyCode)
+							listeningBind = false
+							if btn and btn.Parent then
+								btn.Text = "Bind Key: " .. bindInput.KeyCode.Name
+								btn.BackgroundColor3 = Theme.Element
+							end
+							if bindConn then bindConn:Disconnect(); bindConn = nil end
+							task.delay(0.2, closeActivePopup)
+						elseif bindInput.UserInputType == Enum.UserInputType.MouseButton1 then
+							listeningBind = false
+							if btn and btn.Parent then
+								btn.Text = "Bind Key: " .. (bindKey and bindKey.Name or "None")
+								btn.BackgroundColor3 = Theme.Element
+							end
+							if bindConn then bindConn:Disconnect(); bindConn = nil end
+						end
+					end)
+				end
+			})
 			if bindKey then
-				table.insert(items, {Text = "Unbind Key", Callback = function()
-					setBindKey(nil)
-					Library:Notify("Keybind", "Tuş ataması kaldırıldı.", 2, "info")
-				end})
+				table.insert(items, {Text = "Unbind Key", Callback = function() setBindKey(nil) end})
 			end
 		end
 		return items
@@ -1777,20 +1820,17 @@ local function buildKeybind(container, text, default, callback, flag)
 		listening = true
 		Btn.Text = "..."
 		Btn.BackgroundColor3 = Theme.ElementActive
-		Library:Notify("Keybind", "Basmak istediğiniz tuşa basın...", 3, "info")
 
 		conn = UIS.InputBegan:Connect(function(input, gpe)
 			if input.UserInputType == Enum.UserInputType.Keyboard then
 				setKey(input.KeyCode, true)
 				listening = false
 				Btn.BackgroundColor3 = Theme.Element
-				Library:Notify("Keybind", "Tuş atandı: " .. input.KeyCode.Name, 2, "success")
 				if conn then conn:Disconnect(); conn = nil end
 			elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
 				listening = false
 				Btn.Text = key and key.Name or "None"
 				Btn.BackgroundColor3 = Theme.Element
-				Library:Notify("Keybind", "Tuş ataması iptal edildi.", 2, "warning")
 				if conn then conn:Disconnect(); conn = nil end
 			end
 		end)
