@@ -30,6 +30,42 @@ local Theme = {
 	GrabberWidth = 10,
 }
 
+-- ============================================================
+-- Z-Index / Katman Yönetimi
+-- İmGui pencereleri ve popup/overlay katmanları için merkezi
+-- sayaç. createWindow pencere oluştururken tüketir.
+-- ============================================================
+local ZCounter = 0
+local function nextZ()
+	ZCounter = ZCounter + 1
+	return ZCounter
+end
+
+function Library:SetZLayer(base, count)
+	local used = 0
+	for _, w in ipairs(Library.Windows) do
+		if w.ZLayer and w.ZLayer.Start == base then used = used + 1 end
+	end
+	local z = nextZ()
+	for _, w in ipairs(Library.Windows) do
+		if w.ZLayer and w.ZLayer.Start == base then
+			w.ZLayer.Start = z
+			w.ZLayer.End = z + w.ZLayer.Count - 1
+			w.Main.ZIndex = w.ZLayer.Start
+		end
+	end
+	return z
+end
+
+-- Fırlatılmış en yüksek pencere Z bloğunun bitişini (ve 1 eklentisini) döndürür
+local function windowZCeiling()
+	local ceiling = 100
+	for _, w in ipairs(Library.Windows) do
+		if w.ZLayer and w.ZLayer.End then ceiling = math.max(ceiling, w.ZLayer.End) end
+	end
+	return ceiling + 1
+end
+
 local Library = {}
 Library.__index = Library
 Library.Windows = {}
@@ -39,6 +75,135 @@ Library.RegisteredKeybinds = {}
 Library.ConfigFolder = "ImGuiConfigs"
 Library.AutoSaveEnabled = false
 Library.CurrentConfig = nil
+
+-- ============================================================
+-- ID Stack Sistemi (PushID / PopID / GetID)
+-- Aynı etiketli widget'ların kimlikleri çakışmasın diye
+-- kapsam tabanlı kimlik üretir. Örn: "Pencere/Kategori/Slider"
+-- ============================================================
+Library.IDStack = {}
+function Library:PushID(id)
+	table.insert(Library.IDStack, tostring(id))
+	return Library:GetID()
+end
+function Library:PopID()
+	if #Library.IDStack > 0 then
+		table.remove(Library.IDStack)
+	end
+end
+function Library:GetID(name)
+	local prefix = table.concat(Library.IDStack, "/")
+	if name then
+		if prefix == "" then return tostring(name) end
+		return prefix .. "/" .. tostring(name)
+	end
+	return prefix
+end
+function Library:WithID(id, fn)
+	Library:PushID(id)
+	local ok, res = pcall(fn)
+	Library:PopID()
+	if not ok then warn("[ImGuiLibrary] WithID error: " .. tostring(res)) end
+	return res
+end
+function Library:ClearIDs()
+	Library.IDStack = {}
+end
+
+-- Docking (kenetleme) grupları
+Library.DockGroups = {}
+
+-- Dock grubu oluşturur; birden fazla pencereyi tek kapsayıcıda sekme olarak tutar.
+function Library:CreateDock(name, pos, size)
+	if Library.DockGroups[name] then return Library.DockGroups[name] end
+
+	local dock = {}
+	dock.Name = name
+	dock.Windows = {}
+	dock.Current = nil
+	dock.Position = pos or UDim2.new(0.5, -160, 0, 100)
+	dock.Size = size or UDim2.new(0, 320, 0, 380)
+
+	dock.Host = Library:CreateWindow(name, dock.Position, dock.Size, { NoMenuBar = true })
+	dock.Host.WinTitle = name
+	dock.HostGroup = dock.Host
+
+	local hostMain = dock.Host.Main
+	hostMain.ClipsDescendants = true
+
+	local tabBar = Instance.new("Frame")
+	tabBar.Name = "TabBar"
+	tabBar.Size = UDim2.new(1, 0, 0, 22)
+	tabBar.Position = UDim2.new(0, 0, 0, 0)
+	tabBar.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
+	tabBar.BorderSizePixel = 0
+	tabBar.Parent = hostMain
+
+	local tabLayout = Instance.new("UIListLayout")
+	tabLayout.FillDirection = Enum.FillDirection.Horizontal
+	tabLayout.Padding = UDim.new(0, 4)
+	tabLayout.Parent = tabBar
+
+	local tabPad = Instance.new("UIPadding")
+	tabPad.PaddingLeft = UDim.new(0, 4)
+	tabPad.PaddingTop = UDim.new(0, 2)
+	tabPad.PaddingBottom = UDim.new(0, 2)
+	tabPad.Parent = tabBar
+
+	local body = Instance.new("Frame")
+	body.Name = "DockBody"
+	body.Size = UDim2.new(1, 0, 1, -22)
+	body.Position = UDim2.new(0, 0, 0, 22)
+	body.BackgroundTransparency = 1
+	body.Parent = hostMain
+
+	dock.Content = body
+
+	local chips = {}
+	local function refreshTabs()
+		for _, chip in ipairs(chips) do if chip.Parent then chip:Destroy() end end
+		chips = {}
+		for _, w in ipairs(dock.Windows) do
+			local chip = Instance.new("TextButton")
+			chip.Size = UDim2.new(0, 14, 1, 0)
+			chip.AutomaticSize = Enum.AutomaticSize.X
+			chip.BackgroundColor3 = Theme.Element
+			chip.BorderSizePixel = 0
+			chip.Text = w.WinTitle or "?"
+			chip.Font = Theme.Font
+			chip.TextSize = 10
+			chip.TextColor3 = (w == dock.Current) and Theme.Text or Theme.SubText
+			chip.Parent = tabLayout
+			chip.MouseButton1Click:Connect(function()
+				dock.Current = w
+				dock:Refresh()
+			end)
+			chips[chip] = true
+		end
+	end
+
+	function dock:Refresh()
+		for _, w in ipairs(dock.Windows) do
+			if w.Main and w.Main.Parent == body then
+				w.Main.Visible = (w == dock.Current)
+			end
+		end
+		refreshTabs()
+	end
+
+	function dock:Close()
+		local list = {}
+		for _, w in ipairs(dock.Windows) do table.insert(list, w) end
+		for _, w in ipairs(list) do
+			if w.Undock then w:Undock() end
+		end
+		Library.DockGroups[name] = nil
+		if dock.Host and dock.Host.Destroy then dock.Host:Destroy() end
+	end
+
+	Library.DockGroups[name] = dock
+	return dock
+end
 
 -- Global connection registry, used by Library:Unload() to fully tear down
 -- the module-level (non window-scoped) UserInputService connections.
@@ -99,6 +264,137 @@ local function formatValue(format, v)
 	if type(format) == "function" then return format(v) end
 	if type(format) == "string" then return string.format(format, v) end
 	return tostring(v)
+end
+
+-- ============================================================
+-- Markdown Tarzı Zengin Metin (boyut / kalınlık / renk)
+-- Kullanım: **kalın**, *italik*, `mono`, ~~üstü çizili~~,
+-- [color:red]...[/color], [color:#FF0000]...[/color],
+-- [size:16]büyük[/size], [size:+2]büyük[/size], [b]/[i]/[u]/[s]/[mono]
+-- ============================================================
+local function escapeRich(s)
+	s = s:gsub("&", "&amp;")
+	s = s:gsub("<", "&lt;")
+	s = s:gsub(">", "&gt;")
+	return s
+end
+
+local RICH_OPEN = {
+	{ key = "**", tag = "<b>", close = "</b>" },
+	{ key = "*", tag = "<i>", close = "</i>" },
+	{ key = "~~", tag = "<s>", close = "</s>" },
+	{ key = "`", tag = "<font face=\"Code\">", close = "</font>" },
+}
+
+local function parseMarkdown(text)
+	if not text or text == "" then return text or "" end
+	local out = {}
+	local function walk(s)
+		local i = 1
+		local n = #s
+		while i <= n do
+			local bestStart, bestOpen = math.huge, nil
+			for _, def in ipairs(RICH_OPEN) do
+				local st = string.find(s, def.key, i, true)
+				if st and (st < bestStart or (st == bestStart and bestOpen and #def.key > #bestOpen.key)) then
+					bestStart, bestOpen = st, def
+				end
+			end
+
+			local handledTag = false
+			local tagStart = string.find(s, "[", i, true)
+			if tagStart and (not bestOpen or tagStart < bestStart) then
+				local tagEnd = string.find(s, "]", tagStart, true)
+				if tagEnd then
+					local tag = s:sub(tagStart + 1, tagEnd - 1)
+					-- Kapanış etiketi değersiz isimle bulunur: [color:red]...[/color]
+					local tagName = tag:match("^([^:]+)") or tag
+					local closeTag = "[/" .. tagName .. "]"
+					local closePos = string.find(s, closeTag, tagEnd + 1, true)
+					if closePos then
+						local rich, richClose
+						if tag:sub(1, 6) == "color:" then
+							local c = tag:sub(7)
+							if c:match("^%x+$") and #c <= 6 then c = "#" .. c end
+							rich, richClose = "<font color=\"" .. c .. "\">", "</font>"
+						elseif tag:sub(1, 5) == "size:" then
+							rich, richClose = "<font size=\"" .. tag:sub(6) .. "\">", "</font>"
+						elseif tag == "b" then rich, richClose = "<b>", "</b>"
+						elseif tag == "i" then rich, richClose = "<i>", "</i>"
+						elseif tag == "u" then rich, richClose = "<u>", "</u>"
+						elseif tag == "s" then rich, richClose = "<s>", "</s>"
+						elseif tag == "mono" then rich, richClose = "<font face=\"Code\">", "</font>"
+						end
+						if rich then
+							if tagStart > i then table.insert(out, escapeRich(s:sub(i, tagStart - 1))) end
+							table.insert(out, rich)
+							walk(s:sub(tagEnd + 1, closePos - 1))
+							table.insert(out, richClose)
+							i = closePos + #closeTag
+							handledTag = true
+						end
+					end
+				end
+			end
+
+			if handledTag then continue end
+
+			if not bestOpen then
+				table.insert(out, escapeRich(s:sub(i)))
+				break
+			end
+
+			if bestStart > i then table.insert(out, escapeRich(s:sub(i, bestStart - 1))) end
+			local bodyStart = bestStart + #bestOpen.key
+			local closePos = string.find(s, bestOpen.key, bodyStart, true)
+			if not closePos then
+				table.insert(out, escapeRich(s:sub(bestStart)))
+				break
+			end
+			table.insert(out, bestOpen.tag)
+			walk(s:sub(bodyStart, closePos - 1))
+			table.insert(out, bestOpen.close)
+			i = closePos + #bestOpen.key
+		end
+	end
+	walk(text)
+	return table.concat(out)
+end
+
+Library.Markdown = parseMarkdown
+
+-- HSV <-> RGB dönüşümleri (Compact Color Wheel için)
+local function hsvToRgb(h, s, v)
+	h = h % 360
+	s = math.clamp(s, 0, 1)
+	v = math.clamp(v, 0, 1)
+	if s <= 0 then return v, v, v end
+	local hp = h / 60
+	local c = v * s
+	local x = c * (1 - math.abs(hp % 2 - 1))
+	local m = v - c
+	local r, g, b
+	if hp < 1 then r, g, b = c, x, 0
+	elseif hp < 2 then r, g, b = x, c, 0
+	elseif hp < 3 then r, g, b = 0, c, x
+	elseif hp < 4 then r, g, b = 0, x, c
+	elseif hp < 5 then r, g, b = x, 0, c
+	else r, g, b = c, 0, x end
+	return r + m, g + m, b + m
+end
+
+local function rgbToHsv(r, g, b)
+	local mx, mn = math.max(r, g, b), math.min(r, g, b)
+	local d = mx - mn
+	local h, s, v = 0, 0, mx
+	if d > 0 and mx > 0 then
+		s = d / mx
+		if mx == r then h = ((g - b) / d) % 6
+		elseif mx == g then h = (b - r) / d + 2
+		else h = (r - g) / d + 4 end
+		h = h * 60
+	end
+	return h, s, v
 end
 
 local function getScreenGui()
@@ -370,6 +666,30 @@ OverlayLayer.Size = UDim2.new(1, 0, 1, 0)
 OverlayLayer.BackgroundTransparency = 1
 OverlayLayer.ZIndex = 5000
 OverlayLayer.Parent = getScreenGui()
+
+-- Pencere Z bloklarını yeniden yönlendirilmiş pencerelere yeniden dağıt
+local function normalizeWindowZ()
+	for _, w in ipairs(Library.Windows) do
+		if w.ZLayer then
+			w.ZLayer.Start = windowZCeiling()
+			w.ZLayer.End = w.ZLayer.Start + w.ZLayer.Count - 1
+			w.Main.ZIndex = w.ZLayer.Start
+		end
+	end
+end
+
+-- Bir pencereyi en üste getir ve Z bloklarını yeniden dağıt
+local function bringToFront(window)
+	local wasTop = true
+	for _, w in ipairs(Library.Windows) do
+		if w ~= window and w.ZLayer and w.ZLayer.Start > window.ZLayer.Start then
+			wasTop = false
+			break
+		end
+	end
+	if wasTop then return end
+	normalizeWindowZ()
+end
 
 local ActivePopup = nil
 
@@ -707,7 +1027,8 @@ local function buildLabel(container, text)
 	local Label = Instance.new("TextLabel")
 	Label.Size = UDim2.new(1, 0, 0, 18)
 	Label.BackgroundTransparency = 1
-	Label.Text = text
+	Label.RichText = true
+	Label.Text = parseMarkdown(text)
 	Label.Font = Theme.Font
 	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.SubText
@@ -1581,7 +1902,8 @@ local function buildColorpicker(container, text, default, callback, flag, defaul
 	Btn.Size = UDim2.new(1, -26, 1, 0)
 	Btn.BackgroundColor3 = Theme.Element
 	Btn.BorderSizePixel = 0
-	Btn.Text = text
+	Btn.RichText = true
+	Btn.Text = parseMarkdown(text)
 	Btn.Font = Theme.Font
 	Btn.TextSize = Theme.TextSize
 	Btn.TextColor3 = Theme.Text
@@ -1614,6 +1936,7 @@ local function buildColorpicker(container, text, default, callback, flag, defaul
 
 	local hexBoxRef = nil
 	local alphaLblRef = nil
+	local wheelRef = nil
 
 	local function setColor(c, a, fromUser)
 		color = c
@@ -1628,7 +1951,7 @@ local function buildColorpicker(container, text, default, callback, flag, defaul
 
 	local function openPanel()
 		isOpen = true
-		openOverlayPanel(Holder, 122, function(panel)
+		openOverlayPanel(Holder, 224, function(panel)
 			local Pad2 = Instance.new("UIPadding")
 			Pad2.PaddingLeft = UDim.new(0, 6)
 			Pad2.PaddingRight = UDim.new(0, 6)
@@ -1642,9 +1965,50 @@ local function buildColorpicker(container, text, default, callback, flag, defaul
 
 			local r, g, b = math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255)
 
+			-- Compact Hue Wheel
+			local WHEEL_SIZE = 140
+			local HueWheel = Instance.new("ImageLabel")
+			HueWheel.Size = UDim2.fromOffset(WHEEL_SIZE, WHEEL_SIZE)
+			HueWheel.AnchorPoint = Vector2.new(0.5, 0)
+			HueWheel.Position = UDim2.new(0.5, 0, 0, 0)
+			HueWheel.BackgroundColor3 = color
+			HueWheel.BackgroundTransparency = 1
+			HueWheel.Image = "rbxassetid://1362311373"
+			HueWheel.Active = true
+			HueWheel.Parent = panel
+			stroke(HueWheel, Theme.Border)
+			wheelRef = HueWheel
+
+			local function pickFromMouse(x, y)
+				local size = HueWheel.AbsoluteSize
+				local cx, cy = size.X / 2, size.Y / 2
+				local dx, dy = x - HueWheel.AbsolutePosition.X - cx, y - HueWheel.AbsolutePosition.Y - cy
+				local radius = math.min(cx, cy) * 0.95
+				local dist = math.sqrt(dx * dx + dy * dy)
+				local sat, val = 1, 1
+				if dist > radius then
+					local scale = radius / dist
+					dx, dy = dx * scale, dy * scale
+				else
+					sat = dist / radius
+				end
+				local hueDeg = math.deg(math.atan2(dy, dx))
+				local H = (hueDeg + 180) % 360
+				local vr, vg, vb = hsvToRgb(H, sat, val)
+				r, g, b = math.floor(vr * 255 + 0.5), math.floor(vg * 255 + 0.5), math.floor(vb * 255 + 0.5)
+				setColor(Color3.fromRGB(r, g, b), alpha, true)
+			end
+
+			HueWheel.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+					pickFromMouse(input.Position.X, input.Position.Y)
+					ActiveSlider = { Update = pickFromMouse, Release = pushAutoSave }
+				end
+			end)
+
 			local function makeChannelSlider(label, initial, onChange, isAlpha)
 				local Row = Instance.new("Frame")
-				Row.Size = UDim2.new(1, 0, 0, 18)
+				Row.Size = UDim2.new(1, 0, 0, 16)
 				Row.BackgroundTransparency = 1
 				Row.Parent = panel
 
@@ -1668,7 +2032,7 @@ local function buildColorpicker(container, text, default, callback, flag, defaul
 				CLbl.Position = UDim2.new(0, 3, 0, 0)
 				CLbl.BackgroundTransparency = 1
 				CLbl.Font = Theme.Font
-				CLbl.TextSize = 11
+				CLbl.TextSize = 10
 				CLbl.TextColor3 = Theme.Text
 				CLbl.TextXAlignment = Enum.TextXAlignment.Left
 				CLbl.Text = label .. ": " .. initial
@@ -2754,6 +3118,12 @@ function Library:CreateWindow(title, pos, size, opts)
 	stroke(Main, Theme.Border)
 	Window.Main = Main
 
+	-- Z-Index katman bloğu (açık pencere sayısına göre aralık)
+	Window.ZLayer = { Start = windowZCeiling(), Count = 40 }
+	Window.ZLayer.End = Window.ZLayer.Start + Window.ZLayer.Count - 1
+	Main.ZIndex = Window.ZLayer.Start
+	Window:SetZIndex(Main.ZIndex)
+
 	local TitleBar = Instance.new("Frame")
 	TitleBar.Name = "TitleBar"
 	TitleBar.Size = UDim2.new(1, 0, 0, 22)
@@ -2895,6 +3265,66 @@ function Library:CreateWindow(title, pos, size, opts)
 			Main.Size = UDim2.new(0, newX, 0, newY)
 			fullSize = Main.Size
 		end
+	end)
+
+	function Window:SetZIndex(z)
+		Window.ZLayer = Window.ZLayer or { Start = z, Count = 40 }
+		Window.ZLayer.Start = z
+		Window.ZLayer.End = z + Window.ZLayer.Count - 1
+		Main.ZIndex = z
+	end
+
+	-- Docking: pencereyi bir dock grubuna kenetler (sekme olarak gösterilir).
+	function Window:Dock(dockName)
+		local dock = Library.DockGroups[dockName]
+		if not dock then dock = Library:CreateDock(dockName) end
+		if Window.DockedAt == dock then return end
+		if Window.DockedAt then Window:Undock() end
+
+		Window.OrigParent = Main.Parent
+		Window.OrigPosition = Main.Position
+		Window.OrigSize = Main.Size
+		Window.DockedAt = dock
+
+		table.insert(dock.Windows, Window)
+		dock.Current = Window
+
+		TitleBar.Visible = false
+		Main.Position = UDim2.new(0, 0, 0, 0)
+		Main.Size = UDim2.new(1, 0, 1, 0)
+		Main.Parent = dock.Content
+		dock:Refresh()
+	end
+
+	function Window:Undock()
+		if not Window.DockedAt then return end
+		local dock = Window.DockedAt
+
+		Main.Parent = Window.OrigParent
+		Main.Position = Window.OrigPosition
+		Main.Size = Window.OrigSize
+		TitleBar.Visible = true
+		Window.DockedAt = nil
+
+		for i, w in ipairs(dock.Windows) do
+			if w == Window then table.remove(dock.Windows, i) break end
+		end
+		if #dock.Windows == 0 then
+			dock:Close()
+		else
+			if dock.Current == Window then dock.Current = dock.Windows[1] end
+			dock:Refresh()
+		end
+	end
+
+	-- Title bar etkileşimi pencereyi öne getirir
+	TitleBar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			bringToFront(Window)
+		end
+	end)
+	CollapseBtn.MouseButton1Click:Connect(function()
+		bringToFront(Window)
 	end)
 
 	local function addMenuItem(name, callback)
@@ -3194,6 +3624,14 @@ function Library:CreateWindow(title, pos, size, opts)
 		for i, w in ipairs(Library.Windows) do
 			if w == Window then table.remove(Library.Windows, i) break end
 		end
+		-- Kalan pencerelerin Z bloklarını daralt
+		for _, w in ipairs(Library.Windows) do
+			if w.ZLayer then
+				w.ZLayer.Start = windowZCeiling()
+				w.ZLayer.End = w.ZLayer.Start + w.ZLayer.Count - 1
+				w.Main.ZIndex = w.ZLayer.Start
+			end
+		end
 	end
 
 	function Window:SetVisible(visible)
@@ -3340,6 +3778,39 @@ function Library:CreateStyleEditorWindow()
 
 	SizesTab:AddSlider("Slider Grab Min Size", 4, 20, Theme.GrabberWidth or 10, function(v)
 		Theme.GrabberWidth = v
+	end)
+
+	-- Markdown / Zengin Metin sekmesi
+	local TextTab = StyleWin:AddCategory("Text")
+	TextTab:AddLabel("Markdown Zengin Metin")
+	TextTab:AddLabel("Kullanım: **kalın**, *italik*, `mono`, ~~üstü çizili~~")
+	TextTab:AddLabel("[color:red]renk[/color], [color:#00FF00]hex[/color], [size:16]boyut[/size]")
+	TextTab:AddLabel("")
+	TextTab:AddLabel("**Kalın** *İtalik* `Mono` ~~Çizili~~")
+	TextTab:AddLabel("[color:orange]Turuncu[/color] [size:14]Orta[/size] [color:#55FF55]Yeşil[/color]")
+
+	-- Z-Index sekmesi
+	local ZTab = StyleWin:AddCategory("Z-Index")
+	ZTab:AddLabel("Katman Yönetimi (Z-Index)")
+	ZTab:AddLabel("Pencere sayısı: " .. tostring(#Library.Windows))
+	ZTab:AddSlider("Katman Z-Index", 1, 200, 1, function(v)
+		Library:SetZLayer(1, 40)
+	end)
+	ZTab:AddButton("Pencereleri Sıfırla (Sıralı Z)", function()
+		for _, w in ipairs(Library.Windows) do
+			if w.ZLayer then
+				w.ZLayer.Start = windowZCeiling()
+				w.ZLayer.End = w.ZLayer.Start + w.ZLayer.Count - 1
+				w.Main.ZIndex = w.ZLayer.Start
+			end
+		end
+		Library:Notify("Z-Index", "Pencere Z katmanları sıralandı.", 3, "info")
+	end)
+	ZTab:AddButton("Katmanları Belirle (SetZIndex)", function()
+		for _, w in ipairs(Library.Windows) do
+			if w.SetZIndex then w:SetZIndex(w.Main.ZIndex) end
+		end
+		Library:Notify("Z-Index", "Katman değerleri yeniden uygulandı.", 3, "info")
 	end)
 
 	return StyleWin
