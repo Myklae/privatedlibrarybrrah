@@ -337,6 +337,12 @@ local function closeActivePopup()
 	end
 end
 
+-- ============================================================
+-- Sürükleme (Drag) Sistemi
+-- NOT: Artık SADECE verilen handle'lardan (varsayılan: TitleBar)
+-- sürükleme başlatılabiliyor. Böylece slider/dropdown gibi
+-- elementlere tıklarken pencere kaymıyor.
+-- ============================================================
 local function makeDraggable(handles, target)
 	if type(handles) ~= "table" then handles = {handles} end
 	local dragging = false
@@ -1052,6 +1058,288 @@ local function buildTextbox(container, text, default, placeholder, callback, fla
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) value = v; Box.Text = v end,
 		Get = function() return value end
+	})
+	return api
+end
+
+-- ============================================================
+-- YENİ: Progress Bar
+-- ============================================================
+local function buildProgressBar(container, text, min, max, default, format)
+	min = min or 0
+	max = max or 100
+	local value = default or min
+
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(1, 0, 0, 20)
+	Holder.BackgroundTransparency = 1
+	Holder.Parent = container
+
+	local Track = Instance.new("Frame")
+	Track.Size = UDim2.new(1, 0, 1, 0)
+	Track.BackgroundColor3 = Theme.Element
+	Track.BorderSizePixel = 0
+	Track.Parent = Holder
+	stroke(Track, Theme.Border)
+
+	local Fill = Instance.new("Frame")
+	Fill.BackgroundColor3 = Theme.Accent
+	Fill.BackgroundTransparency = 0.35
+	Fill.BorderSizePixel = 0
+	Fill.Parent = Track
+
+	local Label = Instance.new("TextLabel")
+	Label.Size = UDim2.new(1, -8, 1, 0)
+	Label.Position = UDim2.new(0, 4, 0, 0)
+	Label.BackgroundTransparency = 1
+	Label.Font = Theme.Font
+	Label.TextSize = Theme.TextSize
+	Label.TextColor3 = Theme.Text
+	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.ZIndex = 2
+	Label.Parent = Track
+
+	local function apply(v)
+		value = math.clamp(v, min, max)
+		local r = (value - min) / math.max(1e-9, max - min)
+		Fill.Size = UDim2.new(r, 0, 1, 0)
+		if format then
+			Label.Text = text .. ": " .. formatValue(format, value)
+		else
+			Label.Text = text .. ": " .. tostring(value)
+		end
+	end
+
+	apply(value)
+
+	local api = attachDependencyAPI(Holder, {
+		Set = function(v) apply(v) end,
+		Get = function() return value end
+	})
+	return api
+end
+
+-- ============================================================
+-- YENİ: RGB Inputlu Colorpicker
+-- ============================================================
+local function buildColorpicker(container, text, default, callback, flag)
+	local color = default or Color3.fromRGB(255, 255, 255)
+	local isOpen = false
+
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(1, 0, 0, 22)
+	Holder.BackgroundTransparency = 1
+	Holder.Parent = container
+
+	local Btn = Instance.new("TextButton")
+	Btn.Size = UDim2.new(1, -26, 1, 0)
+	Btn.BackgroundColor3 = Theme.Element
+	Btn.BorderSizePixel = 0
+	Btn.Text = text
+	Btn.Font = Theme.Font
+	Btn.TextSize = Theme.TextSize
+	Btn.TextColor3 = Theme.Text
+	Btn.TextXAlignment = Enum.TextXAlignment.Left
+	Btn.Parent = Holder
+	stroke(Btn, Theme.Border)
+
+	local Pad = Instance.new("UIPadding")
+	Pad.PaddingLeft = UDim.new(0, 6)
+	Pad.Parent = Btn
+
+	local Swatch = Instance.new("TextButton")
+	Swatch.Size = UDim2.new(0, 22, 1, 0)
+	Swatch.Position = UDim2.new(1, -22, 0, 0)
+	Swatch.BackgroundColor3 = color
+	Swatch.BorderSizePixel = 0
+	Swatch.Text = ""
+	Swatch.AutoButtonColor = false
+	Swatch.Parent = Holder
+	stroke(Swatch, Theme.Border)
+
+	local function closePanel()
+		isOpen = false
+	end
+
+	local function setColor(c, fromUser)
+		color = c
+		Swatch.BackgroundColor3 = color
+		if callback then callback(color) end
+		if fromUser then pushAutoSave() end
+	end
+
+	local function openPanel()
+		isOpen = true
+		openOverlayPanel(Holder, 78, function(panel)
+			local Pad2 = Instance.new("UIPadding")
+			Pad2.PaddingLeft = UDim.new(0, 6)
+			Pad2.PaddingRight = UDim.new(0, 6)
+			Pad2.PaddingTop = UDim.new(0, 6)
+			Pad2.PaddingBottom = UDim.new(0, 6)
+			Pad2.Parent = panel
+
+			local Layout = Instance.new("UIListLayout")
+			Layout.Padding = UDim.new(0, 4)
+			Layout.Parent = panel
+
+			local r, g, b = math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255)
+
+			local function makeChannelSlider(label, initial, onChange)
+				local Row = Instance.new("Frame")
+				Row.Size = UDim2.new(1, 0, 0, 18)
+				Row.BackgroundTransparency = 1
+				Row.Parent = panel
+
+				local CTrack = Instance.new("Frame")
+				CTrack.Size = UDim2.new(1, 0, 1, 0)
+				CTrack.BackgroundColor3 = Theme.Element
+				CTrack.BorderSizePixel = 0
+				CTrack.Active = true
+				CTrack.Parent = Row
+				stroke(CTrack, Theme.Border)
+
+				local CFill = Instance.new("Frame")
+				CFill.Size = UDim2.new(initial / 255, 0, 1, 0)
+				CFill.BackgroundColor3 = Theme.Accent
+				CFill.BackgroundTransparency = 0.5
+				CFill.BorderSizePixel = 0
+				CFill.Parent = CTrack
+
+				local CLbl = Instance.new("TextLabel")
+				CLbl.Size = UDim2.new(1, -6, 1, 0)
+				CLbl.Position = UDim2.new(0, 3, 0, 0)
+				CLbl.BackgroundTransparency = 1
+				CLbl.Font = Theme.Font
+				CLbl.TextSize = 11
+				CLbl.TextColor3 = Theme.Text
+				CLbl.TextXAlignment = Enum.TextXAlignment.Left
+				CLbl.Text = label .. ": " .. initial
+				CLbl.ZIndex = 2
+				CLbl.Parent = CTrack
+
+				local function setFromX(x)
+					local rel = math.clamp((x - CTrack.AbsolutePosition.X) / CTrack.AbsoluteSize.X, 0, 1)
+					local v = math.floor(rel * 255)
+					CFill.Size = UDim2.new(rel, 0, 1, 0)
+					CLbl.Text = label .. ": " .. v
+					onChange(v)
+				end
+
+				CTrack.InputBegan:Connect(function(input)
+					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+						setFromX(input.Position.X)
+						ActiveSlider = { Update = setFromX, Release = pushAutoSave }
+					end
+				end)
+			end
+
+			makeChannelSlider("R", r, function(v)
+				r = v
+				setColor(Color3.fromRGB(r, g, b), true)
+			end)
+			makeChannelSlider("G", g, function(v)
+				g = v
+				setColor(Color3.fromRGB(r, g, b), true)
+			end)
+			makeChannelSlider("B", b, function(v)
+				b = v
+				setColor(Color3.fromRGB(r, g, b), true)
+			end)
+		end, closePanel, 180)
+	end
+
+	Btn.MouseButton1Click:Connect(function()
+		if isOpen then closeActivePopup() else openPanel() end
+	end)
+	Swatch.MouseButton1Click:Connect(function()
+		if isOpen then closeActivePopup() else openPanel() end
+	end)
+
+	registerFlag(flag, {
+		Get = function() return color end,
+		Set = function(v) setColor(v, false) end
+	})
+	if callback then callback(color) end
+
+	local api = attachDependencyAPI(Holder, {
+		Set = function(v) setColor(v, false) end,
+		Get = function() return color end
+	})
+	return api
+end
+
+-- ============================================================
+-- YENİ: Keybind
+-- ============================================================
+local function buildKeybind(container, text, default, callback, flag)
+	local key = default
+	local listening = false
+
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(1, 0, 0, 22)
+	Holder.BackgroundTransparency = 1
+	Holder.Parent = container
+
+	local Label = Instance.new("TextLabel")
+	Label.Size = UDim2.new(1, -70, 1, 0)
+	Label.BackgroundTransparency = 1
+	Label.Text = text
+	Label.Font = Theme.Font
+	Label.TextSize = Theme.TextSize
+	Label.TextColor3 = Theme.Text
+	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Parent = Holder
+
+	local Btn = Instance.new("TextButton")
+	Btn.Size = UDim2.new(0, 64, 1, 0)
+	Btn.Position = UDim2.new(1, -64, 0, 0)
+	Btn.BackgroundColor3 = Theme.Element
+	Btn.BorderSizePixel = 0
+	Btn.Font = Theme.Font
+	Btn.TextSize = Theme.TextSize
+	Btn.TextColor3 = Theme.Text
+	Btn.Text = key and key.Name or "None"
+	Btn.Parent = Holder
+	stroke(Btn, Theme.Border)
+
+	local conn = nil
+
+	local function setKey(k, fromUser)
+		key = k
+		Btn.Text = key and key.Name or "None"
+		if callback then callback(key) end
+		if fromUser then pushAutoSave() end
+	end
+
+	Btn.MouseButton1Click:Connect(function()
+		if listening then return end
+		listening = true
+		Btn.Text = "..."
+		Btn.BackgroundColor3 = Theme.ElementActive
+
+		conn = UIS.InputBegan:Connect(function(input, gpe)
+			if input.UserInputType == Enum.UserInputType.Keyboard then
+				setKey(input.KeyCode, true)
+				listening = false
+				Btn.BackgroundColor3 = Theme.Element
+				if conn then conn:Disconnect(); conn = nil end
+			elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
+				listening = false
+				Btn.Text = key and key.Name or "None"
+				Btn.BackgroundColor3 = Theme.Element
+				if conn then conn:Disconnect(); conn = nil end
+			end
+		end)
+	end)
+
+	registerFlag(flag, {
+		Get = function() return key end,
+		Set = function(v) setKey(v, false) end
+	})
+
+	local api = attachDependencyAPI(Holder, {
+		Set = function(v) setKey(v, false) end,
+		Get = function() return key end
 	})
 	return api
 end
@@ -1927,7 +2215,9 @@ function Library:CreateWindow(title, pos, size, opts)
 		end
 	end)
 
-	makeDraggable({ TitleBar, Main, MenuBar, Tabs }, Main)
+	-- SADECE TitleBar'dan sürükleme (elementlerin olduğu Body/Tabs/MenuBar
+	-- artık drag handle değil, böylece slider/dropdown vb. tıklarken pencere kaymıyor)
+	makeDraggable({ TitleBar }, Main)
 
 	local ResizeHandle = Instance.new("Frame")
 	ResizeHandle.Size = UDim2.new(0, 12, 0, 12)
