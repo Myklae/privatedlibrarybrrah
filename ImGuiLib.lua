@@ -16,6 +16,8 @@ local Theme = {
 	ElementHover = Color3.fromRGB(45, 45, 55),
 	ElementActive = Color3.fromRGB(55, 55, 70),
 	Accent = Color3.fromRGB(41, 74, 122),
+	Grabber = Color3.fromRGB(66, 115, 180),
+	GrabberHover = Color3.fromRGB(85, 140, 210),
 	Text = Color3.fromRGB(240, 240, 240),
 	SubText = Color3.fromRGB(160, 160, 165),
 	Border = Color3.fromRGB(50, 50, 60),
@@ -128,15 +130,7 @@ local function bindTooltip(inst, text)
 	end)
 end
 
--- ============================================================
--- Overlay Layer + Popup Helpers
--- Dropdown / MultiDropdown / Colorpicker panels used to live
--- INSIDE the scrolling category page, which meant Roblox's
--- ScrollingFrame clipping could cut them off entirely (they'd
--- "not open" visually and not be clickable). They now render in
--- a top-level overlay layer that is never clipped.
--- ============================================================
-
+-- Overlay Layer & Popups
 local OverlayLayer = Instance.new("Frame")
 OverlayLayer.Name = "OverlayLayer"
 OverlayLayer.Size = UDim2.new(1, 0, 1, 0)
@@ -156,11 +150,7 @@ local function closeActivePopup()
 	end
 end
 
--- Opens a floating panel anchored below (or above, if there's no
--- room) the given instance. Closes any previously open popup.
--- buildFn(panel) populates the panel's contents.
--- onClose() is called whenever the popup closes for any reason.
-local function openOverlayPanel(anchor, height, buildFn, onClose)
+local function openOverlayPanel(anchor, height, buildFn, onClose, overrideWidth)
 	closeActivePopup()
 
 	local catcher = Instance.new("TextButton")
@@ -181,18 +171,19 @@ local function openOverlayPanel(anchor, height, buildFn, onClose)
 	local absPos = anchor.AbsolutePosition
 	local absSize = anchor.AbsoluteSize
 	local screenSize = OverlayLayer.AbsoluteSize
+	local panelWidth = overrideWidth or absSize.X
 
 	local posX = absPos.X
 	local posY = absPos.Y + absSize.Y + 2
 	if posY + height > screenSize.Y then
 		posY = absPos.Y - height - 2
 	end
-	if posX + absSize.X > screenSize.X then
-		posX = math.max(0, screenSize.X - absSize.X)
+	if posX + panelWidth > screenSize.X then
+		posX = math.max(0, screenSize.X - panelWidth)
 	end
 
 	panel.Position = UDim2.new(0, posX, 0, posY)
-	panel.Size = UDim2.new(0, absSize.X, 0, height)
+	panel.Size = UDim2.new(0, panelWidth, 0, height)
 
 	catcher.MouseButton1Click:Connect(function()
 		closeActivePopup()
@@ -201,34 +192,6 @@ local function openOverlayPanel(anchor, height, buildFn, onClose)
 	buildFn(panel)
 
 	ActivePopup = { catcher = catcher, panel = panel, onClose = onClose }
-end
-
--- Binds the same "activate" callback to every instance passed in.
--- Used for widgets like Checkbox/Radio/Section where the clickable
--- area is a button with decorative children (icon + label) drawn on
--- top of it. Binding to all of them (with a short debounce so a
--- single physical click can't double-fire) guarantees the widget
--- reacts no matter which visual layer actually receives the click.
-local function bindActivation(objects, callback)
-	local lastFire = 0
-	local function fire()
-		local now = os.clock()
-		if now - lastFire < 0.05 then return end
-		lastFire = now
-		callback()
-	end
-	for _, obj in ipairs(objects) do
-		if obj:IsA("GuiButton") then
-			obj.MouseButton1Click:Connect(fire)
-		else
-			obj.Active = true
-			obj.InputBegan:Connect(function(input)
-				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-					fire()
-				end
-			end)
-		end
-	end
 end
 
 local function hasFileApi()
@@ -360,10 +323,8 @@ local function buildSeparator(container, text)
 		Label.Text = text
 		Label.Parent = Row
 
-		-- Short trailing tick after the label instead of filling the whole row
 		Line.Size = UDim2.new(0, 24, 0, 1)
 	else
-		-- No label: keep it as a full-width divider
 		Line.Size = UDim2.new(0, 0, 0, 1)
 		flexify(Line)
 	end
@@ -410,6 +371,7 @@ local function buildCheckbox(container, text, default, callback, flag)
 	Box.Position = UDim2.new(0, 0, 0.5, -7)
 	Box.BackgroundColor3 = state and Theme.Accent or Theme.Element
 	Box.BorderSizePixel = 0
+	Box.Active = false
 	Box.Parent = Holder
 	stroke(Box, Theme.Border)
 
@@ -422,6 +384,7 @@ local function buildCheckbox(container, text, default, callback, flag)
 	Label.TextSize = 12
 	Label.TextColor3 = Theme.Text
 	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Active = false
 	Label.Parent = Holder
 
 	local function setState(v, fromUser)
@@ -431,7 +394,7 @@ local function buildCheckbox(container, text, default, callback, flag)
 		if fromUser then pushAutoSave() end
 	end
 
-	bindActivation({ Holder, Box, Label }, function()
+	Holder.MouseButton1Click:Connect(function()
 		setState(not state, true)
 	end)
 
@@ -441,6 +404,7 @@ local function buildCheckbox(container, text, default, callback, flag)
 	return Holder, {Set = function(v) setState(v, false) end, Get = function() return state end}
 end
 
+-- ImGUI Grabber Knob 'lu Single Slider
 local function buildSlider(container, text, min, max, default, callback, flag)
 	min = min or 0
 	max = max or 100
@@ -459,11 +423,24 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 	Track.Parent = Holder
 	stroke(Track, Theme.Border)
 
+	local GRABBER_WIDTH = 10
+	local rel = (value - min) / math.max(1e-9, max - min)
+
 	local Fill = Instance.new("Frame")
-	Fill.Size = UDim2.new((value - min) / (max - min), 0, 1, 0)
+	Fill.Size = UDim2.new(rel, 0, 1, 0)
 	Fill.BackgroundColor3 = Theme.Accent
+	Fill.BackgroundTransparency = 0.5
 	Fill.BorderSizePixel = 0
 	Fill.Parent = Track
+
+	local Grabber = Instance.new("Frame")
+	Grabber.Size = UDim2.new(0, GRABBER_WIDTH, 1, 0)
+	Grabber.Position = UDim2.new(rel, -rel * GRABBER_WIDTH, 0, 0)
+	Grabber.BackgroundColor3 = Theme.Grabber
+	Grabber.BorderSizePixel = 0
+	Grabber.ZIndex = 3
+	Grabber.Parent = Track
+	stroke(Grabber, Theme.Border)
 
 	local ValueLabel = Instance.new("TextLabel")
 	ValueLabel.Size = UDim2.new(1, -8, 1, 0)
@@ -474,20 +451,21 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 	ValueLabel.TextSize = 12
 	ValueLabel.TextColor3 = Theme.Text
 	ValueLabel.TextXAlignment = Enum.TextXAlignment.Left
-	ValueLabel.ZIndex = 2
+	ValueLabel.ZIndex = 4
 	ValueLabel.Parent = Track
 
 	local function apply(v)
 		value = math.clamp(v, min, max)
-		local rel = (value - min) / (max - min)
-		Fill.Size = UDim2.new(rel, 0, 1, 0)
+		local r = (value - min) / math.max(1e-9, max - min)
+		Fill.Size = UDim2.new(r, 0, 1, 0)
+		Grabber.Position = UDim2.new(r, -r * GRABBER_WIDTH, 0, 0)
 		ValueLabel.Text = text .. ": " .. tostring(value)
 		if callback then callback(value) end
 	end
 
 	local function setFromX(x)
-		local rel = math.clamp((x - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
-		apply(math.floor(min + (max - min) * rel))
+		local r = math.clamp((x - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
+		apply(math.floor(min + (max - min) * r))
 	end
 
 	Track.InputBegan:Connect(function(input)
@@ -500,6 +478,125 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 	registerFlag(flag, {Get = function() return value end, Set = function(v) apply(v) end})
 	if callback then callback(value) end
 	return {Set = function(v) apply(v) end, Get = function() return value end}
+end
+
+-- ImGUI Çift Tutamaçlı Range Slider (2 Değer Arası)
+local function buildRangeSlider(container, text, min, max, defaultLow, defaultHigh, callback, flag)
+	min, max = min or 0, max or 100
+	local valLow = defaultLow or min
+	local valHigh = defaultHigh or max
+
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(1, 0, 0, 22)
+	Holder.BackgroundTransparency = 1
+	Holder.Parent = container
+
+	local Track = Instance.new("Frame")
+	Track.Size = UDim2.new(1, 0, 1, 0)
+	Track.BackgroundColor3 = Theme.Element
+	Track.BorderSizePixel = 0
+	Track.Active = true
+	Track.Parent = Holder
+	stroke(Track, Theme.Border)
+
+	local GRABBER_WIDTH = 8
+	local rLow = (valLow - min) / math.max(1e-9, max - min)
+	local rHigh = (valHigh - min) / math.max(1e-9, max - min)
+
+	local Fill = Instance.new("Frame")
+	Fill.Position = UDim2.new(rLow, 0, 0, 0)
+	Fill.Size = UDim2.new(rHigh - rLow, 0, 1, 0)
+	Fill.BackgroundColor3 = Theme.Accent
+	Fill.BackgroundTransparency = 0.4
+	Fill.BorderSizePixel = 0
+	Fill.Parent = Track
+
+	local GrabberLow = Instance.new("Frame")
+	GrabberLow.Size = UDim2.new(0, GRABBER_WIDTH, 1, 0)
+	GrabberLow.Position = UDim2.new(rLow, -rLow * GRABBER_WIDTH, 0, 0)
+	GrabberLow.BackgroundColor3 = Theme.Grabber
+	GrabberLow.BorderSizePixel = 0
+	GrabberLow.ZIndex = 3
+	GrabberLow.Parent = Track
+	stroke(GrabberLow, Theme.Border)
+
+	local GrabberHigh = Instance.new("Frame")
+	GrabberHigh.Size = UDim2.new(0, GRABBER_WIDTH, 1, 0)
+	GrabberHigh.Position = UDim2.new(rHigh, -rHigh * GRABBER_WIDTH, 0, 0)
+	GrabberHigh.BackgroundColor3 = Theme.Grabber
+	GrabberHigh.BorderSizePixel = 0
+	GrabberHigh.ZIndex = 3
+	GrabberHigh.Parent = Track
+	stroke(GrabberHigh, Theme.Border)
+
+	local ValueLabel = Instance.new("TextLabel")
+	ValueLabel.Size = UDim2.new(1, -8, 1, 0)
+	ValueLabel.Position = UDim2.new(0, 4, 0, 0)
+	ValueLabel.BackgroundTransparency = 1
+	ValueLabel.Text = text .. ": [" .. tostring(valLow) .. " - " .. tostring(valHigh) .. "]"
+	ValueLabel.Font = Theme.Font
+	ValueLabel.TextSize = 12
+	ValueLabel.TextColor3 = Theme.Text
+	ValueLabel.TextXAlignment = Enum.TextXAlignment.Left
+	ValueLabel.ZIndex = 4
+	ValueLabel.Parent = Track
+
+	local function apply()
+		rLow = (valLow - min) / math.max(1e-9, max - min)
+		rHigh = (valHigh - min) / math.max(1e-9, max - min)
+		Fill.Position = UDim2.new(rLow, 0, 0, 0)
+		Fill.Size = UDim2.new(rHigh - rLow, 0, 1, 0)
+		GrabberLow.Position = UDim2.new(rLow, -rLow * GRABBER_WIDTH, 0, 0)
+		GrabberHigh.Position = UDim2.new(rHigh, -rHigh * GRABBER_WIDTH, 0, 0)
+		ValueLabel.Text = text .. ": [" .. tostring(valLow) .. " - " .. tostring(valHigh) .. "]"
+		if callback then callback(valLow, valHigh) end
+	end
+
+	local activeKnob = nil
+	Track.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			local mouseX = input.Position.X
+			local trackX = Track.AbsolutePosition.X
+			local trackW = Track.AbsoluteSize.X
+			local r = math.clamp((mouseX - trackX) / trackW, 0, 1)
+			local clickedVal = math.floor(min + (max - min) * r)
+
+			if math.abs(clickedVal - valLow) < math.abs(clickedVal - valHigh) then
+				activeKnob = "low"
+				valLow = math.min(clickedVal, valHigh)
+			else
+				activeKnob = "high"
+				valHigh = math.max(clickedVal, valLow)
+			end
+			apply()
+
+			local function updateDrag(x)
+				local rel = math.clamp((x - trackX) / trackW, 0, 1)
+				local v = math.floor(min + (max - min) * rel)
+				if activeKnob == "low" then
+					valLow = math.min(v, valHigh)
+				else
+					valHigh = math.max(v, valLow)
+				end
+				apply()
+			end
+
+			ActiveSlider = { Update = updateDrag, Release = pushAutoSave }
+		end
+	end)
+
+	registerFlag(flag, {
+		Get = function() return {low = valLow, high = valHigh} end,
+		Set = function(v)
+			valLow, valHigh = v.low or min, v.high or max
+			apply()
+		end
+	})
+	if callback then callback(valLow, valHigh) end
+	return {
+		Set = function(l, h) valLow, valHigh = l, h; apply() end,
+		Get = function() return valLow, valHigh end
+	}
 end
 
 local function buildTextbox(container, text, default, placeholder, callback, flag)
@@ -578,7 +675,6 @@ local function buildKeybind(container, text, default, callback, flag)
 	conn = UIS.InputBegan:Connect(function(input, gpe)
 		if listening and input.UserInputType == Enum.UserInputType.Keyboard then
 			if input.KeyCode == Enum.KeyCode.Escape then
-				-- Cancel binding, keep the previous key
 				listening = false
 				KeyBtn.Text = key and key.Name or "None"
 				return
@@ -655,9 +751,6 @@ local function buildProgressBar(container, text, min, max, default, format)
 	}
 end
 
--- Colorpicker: the RGB panel now opens in the overlay layer
--- (anchored to the whole widget row) instead of being nested
--- inside the scrolling page, so it can no longer get clipped.
 local function buildColorpicker(container, text, default, callback, flag)
 	local color = default or Color3.fromRGB(255, 255, 255)
 	local isOpen = false
@@ -665,6 +758,7 @@ local function buildColorpicker(container, text, default, callback, flag)
 	local Holder = Instance.new("Frame")
 	Holder.Size = UDim2.new(1, 0, 0, 22)
 	Holder.BackgroundTransparency = 1
+	Holder.ZIndex = 1
 	Holder.Parent = container
 
 	local Label = Instance.new("TextLabel")
@@ -777,7 +871,6 @@ local function buildColorpicker(container, text, default, callback, flag)
 	end}
 end
 
--- MultiDropdown: option list now opens in the overlay layer.
 local function buildMultiDropdown(container, text, options, defaults, callback, flag)
 	local selected = {}
 	for _, v in ipairs(defaults or {}) do selected[v] = true end
@@ -876,7 +969,6 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	}
 end
 
--- Dropdown: option list now opens in the overlay layer.
 local function buildDropdown(container, text, options, default, callback, flag)
 	local selected = default or options[1]
 	local currentOptions = options
@@ -1007,10 +1099,6 @@ local function buildSelectable(container, text, defaultSelected, callback)
 	}
 end
 
--- Radio buttons now support an optional `group` name. Selecting a
--- radio button in a group automatically deselects the others in
--- the same group (this didn't exist before - each radio was fully
--- independent, so you could never really "choose one of many").
 local RadioGroups = {}
 
 local function buildRadioButton(container, text, active, callback, group)
@@ -1028,6 +1116,7 @@ local function buildRadioButton(container, text, active, callback, group)
 	Outer.Position = UDim2.new(0, 0, 0.5, -7)
 	Outer.BackgroundColor3 = Theme.Element
 	Outer.BorderSizePixel = 0
+	Outer.Active = false
 	Outer.Parent = Holder
 	stroke(Outer, Theme.Border)
 
@@ -1037,6 +1126,7 @@ local function buildRadioButton(container, text, active, callback, group)
 	Dot.BackgroundColor3 = Theme.Accent
 	Dot.BorderSizePixel = 0
 	Dot.Visible = state
+	Dot.Active = false
 	Dot.Parent = Outer
 
 	local Label = Instance.new("TextLabel")
@@ -1048,6 +1138,7 @@ local function buildRadioButton(container, text, active, callback, group)
 	Label.TextSize = 12
 	Label.TextColor3 = Theme.Text
 	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Active = false
 	Label.Parent = Holder
 
 	local function setState(v)
@@ -1063,7 +1154,7 @@ local function buildRadioButton(container, text, active, callback, group)
 		table.insert(RadioGroups[group], api)
 	end
 
-	bindActivation({ Holder, Outer, Dot, Label }, function()
+	Holder.MouseButton1Click:Connect(function()
 		if state then return end
 		if group and RadioGroups[group] then
 			for _, other in ipairs(RadioGroups[group]) do
@@ -1119,6 +1210,7 @@ local function buildSectionHeader(container, title, opts)
 	Arrow.TextSize = 11
 	Arrow.TextColor3 = Theme.Text
 	Arrow.Text = collapsed and "▶" or "▼"
+	Arrow.Active = false
 	Arrow.Parent = Header
 
 	local TitleLbl = Instance.new("TextLabel")
@@ -1129,6 +1221,7 @@ local function buildSectionHeader(container, title, opts)
 	TitleLbl.TextColor3 = Theme.Text
 	TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
 	TitleLbl.Text = title
+	TitleLbl.Active = false
 	TitleLbl.Parent = Header
 
 	local Content = Instance.new("Frame")
@@ -1150,7 +1243,7 @@ local function buildSectionHeader(container, title, opts)
 	ContentLayout.Padding = UDim.new(0, 4)
 	ContentLayout.Parent = Content
 
-	bindActivation({ Header, Arrow, TitleLbl }, function()
+	Header.MouseButton1Click:Connect(function()
 		collapsed = not collapsed
 		Content.Visible = not collapsed
 		Arrow.Text = collapsed and "▶" or "▼"
@@ -1193,6 +1286,7 @@ local function buildTree(container, title)
 	Arrow.TextSize = 10
 	Arrow.TextColor3 = Theme.SubText
 	Arrow.Text = "▶"
+	Arrow.Active = false
 	Arrow.Parent = Header
 
 	local TitleLbl = Instance.new("TextLabel")
@@ -1203,6 +1297,7 @@ local function buildTree(container, title)
 	TitleLbl.TextColor3 = Theme.Text
 	TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
 	TitleLbl.Text = title
+	TitleLbl.Active = false
 	TitleLbl.Parent = Header
 
 	local Content = Instance.new("Frame")
@@ -1222,7 +1317,7 @@ local function buildTree(container, title)
 	ContentLayout.Padding = UDim.new(0, 4)
 	ContentLayout.Parent = Content
 
-	bindActivation({ Header, Arrow, TitleLbl }, function()
+	Header.MouseButton1Click:Connect(function()
 		collapsed = not collapsed
 		Content.Visible = not collapsed
 		Arrow.Text = collapsed and "▶" or "▼"
@@ -1290,6 +1385,9 @@ local function buildScope(container)
 	function Scope:AddSlider(text, min, max, default, callback, flag)
 		return buildSlider(container, text, min, max, default, callback, flag)
 	end
+	function Scope:AddRangeSlider(text, min, max, defaultLow, defaultHigh, callback, flag)
+		return buildRangeSlider(container, text, min, max, defaultLow, defaultHigh, callback, flag)
+	end
 	function Scope:AddTextbox(text, default, placeholder, callback, flag)
 		return buildTextbox(container, text, default, placeholder, callback, flag)
 	end
@@ -1347,7 +1445,7 @@ local function buildScope(container)
 end
 
 -- ============================================================
--- Window & Config Tab API
+-- Window & MenuBar API
 -- ============================================================
 
 function Library:CreateWindow(title, pos, size)
@@ -1396,10 +1494,30 @@ function Library:CreateWindow(title, pos, size)
 	TitleLabel.Text = title
 	TitleLabel.Parent = TitleBar
 
+	-- Orijinal ImGUI Top MenuBar Yapısı (Menu, Examples, Tools)
+	local MenuBar = Instance.new("Frame")
+	MenuBar.Name = "MenuBar"
+	MenuBar.Size = UDim2.new(1, 0, 0, 18)
+	MenuBar.Position = UDim2.new(0, 0, 0, 22)
+	MenuBar.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
+	MenuBar.BorderSizePixel = 0
+	MenuBar.Parent = Main
+	stroke(MenuBar, Theme.Border)
+
+	local MenuBarLayout = Instance.new("UIListLayout")
+	MenuBarLayout.FillDirection = Enum.FillDirection.Horizontal
+	MenuBarLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	MenuBarLayout.Padding = UDim.new(0, 2)
+	MenuBarLayout.Parent = MenuBar
+
+	local MenuBarPad = Instance.new("UIPadding")
+	MenuBarPad.PaddingLeft = UDim.new(0, 4)
+	MenuBarPad.Parent = MenuBar
+
 	local Body = Instance.new("Frame")
 	Body.Name = "Body"
-	Body.Size = UDim2.new(1, 0, 1, -22)
-	Body.Position = UDim2.new(0, 0, 0, 22)
+	Body.Size = UDim2.new(1, 0, 1, -40)
+	Body.Position = UDim2.new(0, 0, 0, 40)
 	Body.BackgroundTransparency = 1
 	Body.ClipsDescendants = true
 	Body.Parent = Main
@@ -1435,8 +1553,6 @@ function Library:CreateWindow(title, pos, size)
 		end
 	end)
 
-	-- Close any open dropdown/colorpicker popup before a drag starts,
-	-- so it doesn't end up floating in the wrong place.
 	TitleBar.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			closeActivePopup()
@@ -1484,6 +1600,68 @@ function Library:CreateWindow(title, pos, size)
 			Main.Size = UDim2.new(0, newX, 0, newY)
 			fullSize = Main.Size
 		end
+	end)
+
+	-- MenuBar Öğeleri Ekleme
+	local function addMenuItem(name, callback)
+		local MenuBtn = Instance.new("TextButton")
+		MenuBtn.Size = UDim2.new(0, 50, 1, 0)
+		MenuBtn.BackgroundTransparency = 1
+		MenuBtn.Text = name
+		MenuBtn.Font = Theme.Font
+		MenuBtn.TextSize = 11
+		MenuBtn.TextColor3 = Theme.Text
+		MenuBtn.Parent = MenuBar
+
+		MenuBtn.MouseEnter:Connect(function() MenuBtn.TextColor3 = Theme.Grabber end)
+		MenuBtn.MouseLeave:Connect(function() MenuBtn.TextColor3 = Theme.Text end)
+		MenuBtn.MouseButton1Click:Connect(function()
+			if callback then callback(MenuBtn) end
+		end)
+		return MenuBtn
+	end
+
+	addMenuItem("Menu", function() end)
+	addMenuItem("Examples", function() end)
+
+	-- Tools Menüsü (Config Settings & Style Editor Açma)
+	addMenuItem("Tools", function(anchorBtn)
+		openOverlayPanel(anchorBtn, 42, function(panel)
+			local ListLayout = Instance.new("UIListLayout")
+			ListLayout.Parent = panel
+
+			local function makeToolOpt(text, fn)
+				local OptBtn = Instance.new("TextButton")
+				OptBtn.Size = UDim2.new(1, 0, 0, 20)
+				OptBtn.BackgroundColor3 = Theme.Element
+				OptBtn.BorderSizePixel = 0
+				OptBtn.Text = text
+				OptBtn.Font = Theme.Font
+				OptBtn.TextSize = 11
+				OptBtn.TextColor3 = Theme.Text
+				OptBtn.TextXAlignment = Enum.TextXAlignment.Left
+				OptBtn.Parent = panel
+
+				local OPad = Instance.new("UIPadding")
+				OPad.PaddingLeft = UDim.new(0, 6)
+				OPad.Parent = OptBtn
+
+				OptBtn.MouseEnter:Connect(function() OptBtn.BackgroundColor3 = Theme.Accent end)
+				OptBtn.MouseLeave:Connect(function() OptBtn.BackgroundColor3 = Theme.Element end)
+				OptBtn.MouseButton1Click:Connect(function()
+					closeActivePopup()
+					fn()
+				end)
+			end
+
+			makeToolOpt("Config Settings", function()
+				Library:CreateConfigWindow()
+			end)
+
+			makeToolOpt("Style Editor", function()
+				Library:CreateStyleEditorWindow()
+			end)
+		end, nil, 130)
 	end)
 
 	function Window:AddCategory(name)
@@ -1559,7 +1737,124 @@ function Library:CreateWindow(title, pos, size)
 	return Window
 end
 
--- Config Tab With Auto-Load Feature Included
+-- ============================================================
+-- Tools Menüsünden Açılan Bağımsız Pencereler
+-- ============================================================
+
+-- 1. Bağımsız Config Manager Penceresi
+function Library:CreateConfigWindow()
+	local ConfigWin = Library:CreateWindow("Config Manager", UDim2.new(0, 150, 0, 150), UDim2.new(0, 300, 0, 320))
+	local MainTab = ConfigWin:AddCategory("Configs")
+
+	MainTab:AddLabel("Konfigürasyon Yönetimi")
+	local nameBox = MainTab:AddTextbox("Config Adı", "", "Dosya adı gir...")
+
+	local function getConfigList()
+		local list = Library:ListConfigs()
+		return #list > 0 and list or {"None"}
+	end
+
+	local configDropdown = MainTab:AddDropdown("Kayıtlı Configler", getConfigList(), nil, nil, nil)
+
+	local autoLoadFile = Library.ConfigFolder .. "/autoload.txt"
+	local function getAutoLoadName()
+		if hasFileApi() and isfile(autoLoadFile) then
+			local content = readfile(autoLoadFile)
+			if content and #content > 0 then return content end
+		end
+		return "None"
+	end
+
+	local autoLoadLabel = MainTab:AddLabel("Auto Load: " .. getAutoLoadName())
+
+	MainTab:AddButton("Save Config", function()
+		local name = nameBox.Get()
+		if name == "" then return end
+		Library:SaveConfig(name)
+		configDropdown.Refresh(getConfigList())
+	end)
+
+	MainTab:AddButton("Load Config", function()
+		local name = configDropdown.Get()
+		if name == "None" then return end
+		Library:LoadConfig(name)
+	end)
+
+	MainTab:AddButton("Delete Config", function()
+		local name = configDropdown.Get()
+		if name == "None" or not hasFileApi() then return end
+		local path = Library.ConfigFolder .. "/" .. name .. ".json"
+		if isfile(path) then
+			delfile(path)
+			if getAutoLoadName() == name then
+				delfile(autoLoadFile)
+				autoLoadLabel.Text = "Auto Load: None"
+			end
+			configDropdown.Refresh(getConfigList())
+		end
+	end)
+
+	MainTab:AddButton("Set Auto Load Config", function()
+		local name = configDropdown.Get()
+		if name == "None" or not hasFileApi() then return end
+		ensureFolder()
+		writefile(autoLoadFile, name)
+		autoLoadLabel.Text = "Auto Load: " .. name
+	end)
+
+	MainTab:AddButton("Clear Auto Load Config", function()
+		if hasFileApi() and isfile(autoLoadFile) then
+			delfile(autoLoadFile)
+		end
+		autoLoadLabel.Text = "Auto Load: None"
+	end)
+
+	MainTab:AddCheckbox("Auto Save Enabled", Library.AutoSaveEnabled, function(v)
+		local name = configDropdown.Get()
+		Library:SetAutoSave(v, name ~= "None" and name or nil)
+	end)
+
+	return ConfigWin
+end
+
+-- 2. Bağımsız ImGUI Style Editor Penceresi (Canlı Tema Düzenleyici)
+function Library:CreateStyleEditorWindow()
+	local StyleWin = Library:CreateWindow("Style Editor", UDim2.new(0, 200, 0, 200), UDim2.new(0, 300, 0, 340))
+	local MainTab = StyleWin:AddCategory("Colors")
+
+	MainTab:AddLabel("ImGUI Canlı Tema Düzenleyici")
+
+	MainTab:AddColorpicker("Header Color", Theme.Header, function(color)
+		Theme.Header = color
+		for _, win in ipairs(Library.Windows) do
+			local titleBar = win.Main and win.Main:FindFirstChild("TitleBar")
+			if titleBar then titleBar.BackgroundColor3 = color end
+		end
+	end)
+
+	MainTab:AddColorpicker("Background Color", Theme.Background, function(color)
+		Theme.Background = color
+	end)
+
+	MainTab:AddColorpicker("Accent Color", Theme.Accent, function(color)
+		Theme.Accent = color
+	end)
+
+	MainTab:AddColorpicker("Element Color", Theme.Element, function(color)
+		Theme.Element = color
+	end)
+
+	MainTab:AddColorpicker("Grabber Knob Color", Theme.Grabber, function(color)
+		Theme.Grabber = color
+	end)
+
+	MainTab:AddColorpicker("Text Color", Theme.Text, function(color)
+		Theme.Text = color
+	end)
+
+	return StyleWin
+end
+
 function Library:CreateConfigTab(Window, categoryName)
 	local Category = Window:AddCategory(categoryName or "Settings")
 	Category:AddLabel("Config Manager")
@@ -1631,7 +1926,6 @@ function Library:CreateConfigTab(Window, categoryName)
 		Library:SetAutoSave(v, name ~= "None" and name or nil)
 	end)
 
-	-- Auto load file execution on startup
 	if hasFileApi() and isfile(autoLoadFile) then
 		local autoName = readfile(autoLoadFile)
 		if autoName and autoName ~= "" and isfile(Library.ConfigFolder .. "/" .. autoName .. ".json") then
