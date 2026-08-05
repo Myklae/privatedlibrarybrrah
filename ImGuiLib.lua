@@ -39,7 +39,18 @@ Library.ConfigFolder = "ImGuiConfigs"
 Library.AutoSaveEnabled = false
 Library.CurrentConfig = nil
 
+-- Global connection registry, used by Library:Unload() to fully tear down
+-- the module-level (non window-scoped) UserInputService connections.
+Library.Connections = {}
+
+local function track(conn)
+	table.insert(Library.Connections, conn)
+	return conn
+end
+
+-- ============================================================
 -- Helper Functions
+-- ============================================================
 local function stroke(inst, color, thickness)
 	local s = Instance.new("UIStroke")
 	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
@@ -75,6 +86,17 @@ local function getScreenGui()
 	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	gui.Parent = PlayerGui
 	return gui
+end
+
+-- Every user-supplied callback in the library is routed through this so a
+-- broken callback from a consumer script can never freeze/crash the menu.
+local function safeCall(fn, ...)
+	if not fn then return end
+	local ok, err = pcall(fn, ...)
+	if not ok then
+		warn("[ImGuiLibrary] Callback error: " .. tostring(err))
+	end
+	return ok
 end
 
 -- ============================================================
@@ -260,12 +282,12 @@ function Library:ConfirmModal(title, text, onConfirm, onCancel)
 
 	YesBtn.MouseButton1Click:Connect(function()
 		Catcher:Destroy()
-		if onConfirm then onConfirm() end
+		safeCall(onConfirm)
 	end)
 
 	NoBtn.MouseButton1Click:Connect(function()
 		Catcher:Destroy()
-		if onCancel then onCancel() end
+		safeCall(onCancel)
 	end)
 end
 
@@ -289,11 +311,11 @@ TooltipPad.PaddingLeft = UDim.new(0, 6)
 TooltipPad.PaddingRight = UDim.new(0, 6)
 TooltipPad.Parent = TooltipFrame
 
-UIS.InputChanged:Connect(function(input)
+track(UIS.InputChanged:Connect(function(input)
 	if TooltipFrame.Visible and input.UserInputType == Enum.UserInputType.MouseMovement then
 		TooltipFrame.Position = UDim2.new(0, input.Position.X + 12, 0, input.Position.Y + 12)
 	end
-end)
+end))
 
 -- Geliştirilmiş Düzeltilmiş bindTooltip (API veya GuiObject uyumlu)
 local function bindTooltip(target, text)
@@ -331,7 +353,7 @@ local function closeActivePopup()
 	if ActivePopup then
 		local popup = ActivePopup
 		ActivePopup = nil
-		if popup.onClose then popup.onClose() end
+		if popup.onClose then safeCall(popup.onClose) end
 		if popup.catcher then popup.catcher:Destroy() end
 		if popup.panel then popup.panel:Destroy() end
 	end
@@ -427,6 +449,88 @@ local function openOverlayPanel(anchor, height, buildFn, onClose, overrideWidth)
 	ActivePopup = { catcher = catcher, panel = panel, onClose = onClose }
 end
 
+-- ============================================================
+-- YENİ: Genel Sağ Tık Context Menu
+-- Herhangi bir widget'a sağ tıklandığında küçük bir aksiyon menüsü açar.
+-- itemsFn() -> { {Text = "...", Callback = function() ... end}, ... }
+-- itemsFn dönen liste boşsa (veya nil ise) menü açılmaz.
+-- ============================================================
+local function attachContextMenu(inst, itemsFn)
+	if not inst or typeof(inst) ~= "Instance" then return end
+
+	inst.InputBegan:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton2 then return end
+
+		local items = itemsFn and itemsFn() or nil
+		if not items or #items == 0 then return end
+
+		closeActivePopup()
+
+		local mousePos = UIS:GetMouseLocation()
+		local screenSize = OverlayLayer.AbsoluteSize
+		local menuWidth, menuHeight = 150, (#items * 20) + 6
+
+		local catcher = Instance.new("TextButton")
+		catcher.Size = UDim2.new(1, 0, 1, 0)
+		catcher.BackgroundTransparency = 1
+		catcher.Text = ""
+		catcher.AutoButtonColor = false
+		catcher.ZIndex = OverlayLayer.ZIndex
+		catcher.Parent = OverlayLayer
+
+		local panel = Instance.new("Frame")
+		panel.BackgroundColor3 = Theme.Background
+		panel.BorderSizePixel = 0
+		panel.ZIndex = OverlayLayer.ZIndex + 1
+		panel.Size = UDim2.new(0, menuWidth, 0, menuHeight)
+		panel.Position = UDim2.new(
+			0, math.min(mousePos.X, screenSize.X - menuWidth),
+			0, math.min(mousePos.Y, screenSize.Y - menuHeight)
+		)
+		panel.Parent = OverlayLayer
+		stroke(panel, Theme.Border)
+
+		local Pad = Instance.new("UIPadding")
+		Pad.PaddingTop = UDim.new(0, 3)
+		Pad.PaddingLeft = UDim.new(0, 3)
+		Pad.PaddingRight = UDim.new(0, 3)
+		Pad.Parent = panel
+
+		local Layout = Instance.new("UIListLayout")
+		Layout.Padding = UDim.new(0, 2)
+		Layout.Parent = panel
+
+		for _, item in ipairs(items) do
+			local Btn = Instance.new("TextButton")
+			Btn.Size = UDim2.new(1, 0, 0, 18)
+			Btn.BackgroundColor3 = Theme.Element
+			Btn.BorderSizePixel = 0
+			Btn.Text = item.Text
+			Btn.Font = Theme.Font
+			Btn.TextSize = 11
+			Btn.TextColor3 = Theme.Text
+			Btn.TextXAlignment = Enum.TextXAlignment.Left
+			Btn.ZIndex = OverlayLayer.ZIndex + 2
+			Btn.Parent = panel
+
+			local IPad = Instance.new("UIPadding")
+			IPad.PaddingLeft = UDim.new(0, 6)
+			IPad.Parent = Btn
+
+			Btn.MouseEnter:Connect(function() Btn.BackgroundColor3 = Theme.Accent end)
+			Btn.MouseLeave:Connect(function() Btn.BackgroundColor3 = Theme.Element end)
+			Btn.MouseButton1Click:Connect(function()
+				closeActivePopup()
+				safeCall(item.Callback)
+			end)
+		end
+
+		catcher.MouseButton1Click:Connect(function() closeActivePopup() end)
+
+		ActivePopup = { catcher = catcher, panel = panel, onClose = nil }
+	end)
+end
+
 local function hasFileApi()
 	return writefile and readfile and isfile and isfolder and makefolder
 end
@@ -496,18 +600,18 @@ end
 
 local ActiveSlider = nil
 
-UIS.InputChanged:Connect(function(input)
+track(UIS.InputChanged:Connect(function(input)
 	if ActiveSlider and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 		ActiveSlider.Update(input.Position.X)
 	end
-end)
+end))
 
-UIS.InputEnded:Connect(function(input)
+track(UIS.InputEnded:Connect(function(input)
 	if ActiveSlider and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
 		ActiveSlider.Release()
 		ActiveSlider = nil
 	end
-end)
+end))
 
 -- Helper: Add Dependency Support To Widget API
 local function attachDependencyAPI(holder, api)
@@ -622,7 +726,7 @@ local function buildButton(container, text, callback)
 	Btn.MouseButton1Up:Connect(function() Btn.BackgroundColor3 = Theme.ElementHover end)
 
 	Btn.MouseButton1Click:Connect(function()
-		if callback then callback() end
+		safeCall(callback)
 	end)
 
 	local api = attachDependencyAPI(Btn, {})
@@ -631,6 +735,7 @@ end
 
 local function buildCheckbox(container, text, default, callback, flag)
 	local state = default or false
+	local defaultVal = state
 	local onChangedCallbacks = {}
 
 	local Holder = Instance.new("TextButton")
@@ -664,8 +769,8 @@ local function buildCheckbox(container, text, default, callback, flag)
 	local function setState(v, fromUser)
 		state = v
 		Box.BackgroundColor3 = state and Theme.Accent or Theme.Element
-		if callback then callback(state) end
-		for _, cb in ipairs(onChangedCallbacks) do cb(state) end
+		safeCall(callback, state)
+		for _, cb in ipairs(onChangedCallbacks) do safeCall(cb, state) end
 		if fromUser then pushAutoSave() end
 	end
 
@@ -673,8 +778,12 @@ local function buildCheckbox(container, text, default, callback, flag)
 		setState(not state, true)
 	end)
 
+	attachContextMenu(Holder, function()
+		return {{Text = "Reset to Default", Callback = function() setState(defaultVal, true) end}}
+	end)
+
 	registerFlag(flag, {Get = function() return state end, Set = function(v) setState(v, false) end})
-	if callback then callback(state) end
+	if callback then safeCall(callback, state) end
 
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) setState(v, false) end,
@@ -689,6 +798,7 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 	min = min or 0
 	max = max or 100
 	local value = default or min
+	local defaultVal = value
 
 	local Holder = Instance.new("Frame")
 	Holder.Size = UDim2.new(1, 0, 0, 22)
@@ -742,7 +852,7 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 		Grabber.Size = UDim2.new(0, grabWidth, 1, 0)
 		Grabber.Position = UDim2.new(r, -r * grabWidth, 0, 0)
 		ValueLabel.Text = text .. ": " .. tostring(value)
-		if callback then callback(value) end
+		safeCall(callback, value)
 	end
 
 	local function setFromX(x)
@@ -757,8 +867,12 @@ local function buildSlider(container, text, min, max, default, callback, flag)
 		end
 	end)
 
+	attachContextMenu(Track, function()
+		return {{Text = "Reset to Default", Callback = function() apply(defaultVal); pushAutoSave() end}}
+	end)
+
 	registerFlag(flag, {Get = function() return value end, Set = function(v) apply(v) end})
-	if callback then callback(value) end
+	if callback then safeCall(callback, value) end
 
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) apply(v) end,
@@ -771,6 +885,7 @@ local function buildRangeSlider(container, text, min, max, defaultLow, defaultHi
 	min, max = min or 0, max or 100
 	local valLow = defaultLow or min
 	local valHigh = defaultHigh or max
+	local defLow, defHigh = valLow, valHigh
 
 	local Holder = Instance.new("Frame")
 	Holder.Size = UDim2.new(1, 0, 0, 22)
@@ -838,7 +953,7 @@ local function buildRangeSlider(container, text, min, max, defaultLow, defaultHi
 		GrabberLow.Position = UDim2.new(rLow, -rLow * grabWidth, 0, 0)
 		GrabberHigh.Position = UDim2.new(rHigh, -rHigh * grabWidth, 0, 0)
 		ValueLabel.Text = text .. ": [" .. tostring(valLow) .. " - " .. tostring(valHigh) .. "]"
-		if callback then callback(valLow, valHigh) end
+		safeCall(callback, valLow, valHigh)
 	end
 
 	local activeKnob = nil
@@ -874,6 +989,14 @@ local function buildRangeSlider(container, text, min, max, defaultLow, defaultHi
 		end
 	end)
 
+	attachContextMenu(Track, function()
+		return {{Text = "Reset to Default", Callback = function()
+			valLow, valHigh = defLow, defHigh
+			apply()
+			pushAutoSave()
+		end}}
+	end)
+
 	registerFlag(flag, {
 		Get = function() return {low = valLow, high = valHigh} end,
 		Set = function(v)
@@ -881,7 +1004,7 @@ local function buildRangeSlider(container, text, min, max, defaultLow, defaultHi
 			apply()
 		end
 	})
-	if callback then callback(valLow, valHigh) end
+	if callback then safeCall(callback, valLow, valHigh) end
 
 	local api = attachDependencyAPI(Holder, {
 		Set = function(l, h) valLow, valHigh = l, h; apply() end,
@@ -894,6 +1017,7 @@ local function buildKnob(container, text, values, defaultIndex, callback, flag, 
 	values = values or {"1", "2", "3"}
 	size = size or 32
 	local index = math.clamp(defaultIndex or 1, 1, #values)
+	local defaultIdx = index
 
 	local knobRadius = size / 2
 	local totalHeight = math.max(size + 8, 26)
@@ -983,7 +1107,7 @@ local function buildKnob(container, text, values, defaultIndex, callback, flag, 
 			tick.Size = (i == index) and UDim2.new(0, 4, 0, 4) or UDim2.new(0, 3, 0, 3)
 		end
 
-		if callback then callback(currentVal, index) end
+		safeCall(callback, currentVal, index)
 		pushAutoSave()
 	end
 
@@ -1002,6 +1126,10 @@ local function buildKnob(container, text, values, defaultIndex, callback, flag, 
 
 			ActiveSlider = { Update = updateDrag, Release = pushAutoSave }
 		end
+	end)
+
+	attachContextMenu(Dial, function()
+		return {{Text = "Reset to Default", Callback = function() index = defaultIdx; apply() end}}
 	end)
 
 	registerFlag(flag, {
@@ -1023,6 +1151,7 @@ end
 
 local function buildTextbox(container, text, default, placeholder, callback, flag)
 	local value = default or ""
+	local defaultVal = value
 	local Holder = Instance.new("Frame")
 	Holder.Size = UDim2.new(1, 0, 0, 22)
 	Holder.BackgroundTransparency = 1
@@ -1049,14 +1178,126 @@ local function buildTextbox(container, text, default, placeholder, callback, fla
 
 	Box.FocusLost:Connect(function(enterPressed)
 		value = Box.Text
-		if callback then callback(value, enterPressed) end
+		safeCall(callback, value, enterPressed)
 		pushAutoSave()
+	end)
+
+	attachContextMenu(Box, function()
+		return {{Text = "Reset to Default", Callback = function()
+			value = defaultVal
+			Box.Text = defaultVal
+			safeCall(callback, value, false)
+			pushAutoSave()
+		end}}
 	end)
 
 	registerFlag(flag, {Get = function() return value end, Set = function(v) value = v; Box.Text = v end})
 
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) value = v; Box.Text = v end,
+		Get = function() return value end
+	})
+	return api
+end
+
+-- ============================================================
+-- YENİ: Numeric Input (Spinner) — ImGui'nin InputInt karşılığı
+-- Sliderdan farklı olarak hassas değer girişi için -/+ butonlu,
+-- direkt sayı yazılabilen küçük bir kutu.
+-- ============================================================
+local function buildNumberInput(container, text, min, max, default, step, callback, flag)
+	min = min or 0
+	max = max or 100
+	step = step or 1
+	local value = math.clamp(default or min, min, max)
+	local defaultVal = value
+
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(1, 0, 0, 22)
+	Holder.BackgroundTransparency = 1
+	Holder.Parent = container
+
+	local Label = Instance.new("TextLabel")
+	Label.Size = UDim2.new(1, -72, 1, 0)
+	Label.BackgroundTransparency = 1
+	Label.Text = text
+	Label.Font = Theme.Font
+	Label.TextSize = Theme.TextSize
+	Label.TextColor3 = Theme.Text
+	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Parent = Holder
+
+	local MinusBtn = Instance.new("TextButton")
+	MinusBtn.Size = UDim2.new(0, 18, 1, 0)
+	MinusBtn.Position = UDim2.new(1, -68, 0, 0)
+	MinusBtn.BackgroundColor3 = Theme.Element
+	MinusBtn.BorderSizePixel = 0
+	MinusBtn.Text = "-"
+	MinusBtn.Font = Theme.Font
+	MinusBtn.TextSize = Theme.TextSize
+	MinusBtn.TextColor3 = Theme.Text
+	MinusBtn.Parent = Holder
+	stroke(MinusBtn, Theme.Border)
+
+	local Box = Instance.new("TextBox")
+	Box.Size = UDim2.new(0, 32, 1, 0)
+	Box.Position = UDim2.new(1, -49, 0, 0)
+	Box.BackgroundColor3 = Theme.Element
+	Box.BorderSizePixel = 0
+	Box.Text = tostring(value)
+	Box.Font = Theme.Font
+	Box.TextSize = Theme.TextSize
+	Box.TextColor3 = Theme.Text
+	Box.ClearTextOnFocus = false
+	Box.TextXAlignment = Enum.TextXAlignment.Center
+	Box.Parent = Holder
+	stroke(Box, Theme.Border)
+
+	local PlusBtn = Instance.new("TextButton")
+	PlusBtn.Size = UDim2.new(0, 18, 1, 0)
+	PlusBtn.Position = UDim2.new(1, -18, 0, 0)
+	PlusBtn.BackgroundColor3 = Theme.Element
+	PlusBtn.BorderSizePixel = 0
+	PlusBtn.Text = "+"
+	PlusBtn.Font = Theme.Font
+	PlusBtn.TextSize = Theme.TextSize
+	PlusBtn.TextColor3 = Theme.Text
+	PlusBtn.Parent = Holder
+	stroke(PlusBtn, Theme.Border)
+
+	local function apply(v, fromUser)
+		value = math.clamp(math.floor(v + 0.5), min, max)
+		Box.Text = tostring(value)
+		safeCall(callback, value)
+		if fromUser then pushAutoSave() end
+	end
+
+	MinusBtn.MouseButton1Click:Connect(function() apply(value - step, true) end)
+	PlusBtn.MouseButton1Click:Connect(function() apply(value + step, true) end)
+
+	MinusBtn.MouseEnter:Connect(function() MinusBtn.BackgroundColor3 = Theme.ElementHover end)
+	MinusBtn.MouseLeave:Connect(function() MinusBtn.BackgroundColor3 = Theme.Element end)
+	PlusBtn.MouseEnter:Connect(function() PlusBtn.BackgroundColor3 = Theme.ElementHover end)
+	PlusBtn.MouseLeave:Connect(function() PlusBtn.BackgroundColor3 = Theme.Element end)
+
+	Box.FocusLost:Connect(function()
+		local num = tonumber(Box.Text)
+		if num then
+			apply(num, true)
+		else
+			Box.Text = tostring(value)
+		end
+	end)
+
+	attachContextMenu(Holder, function()
+		return {{Text = "Reset to Default", Callback = function() apply(defaultVal, true) end}}
+	end)
+
+	registerFlag(flag, {Get = function() return value end, Set = function(v) apply(v, false) end})
+	if callback then safeCall(callback, value) end
+
+	local api = attachDependencyAPI(Holder, {
+		Set = function(v) apply(v, false) end,
 		Get = function() return value end
 	})
 	return api
@@ -1124,6 +1365,7 @@ end
 -- ============================================================
 local function buildColorpicker(container, text, default, callback, flag)
 	local color = default or Color3.fromRGB(255, 255, 255)
+	local defaultVal = color
 	local isOpen = false
 
 	local Holder = Instance.new("Frame")
@@ -1164,7 +1406,7 @@ local function buildColorpicker(container, text, default, callback, flag)
 	local function setColor(c, fromUser)
 		color = c
 		Swatch.BackgroundColor3 = color
-		if callback then callback(color) end
+		safeCall(callback, color)
 		if fromUser then pushAutoSave() end
 	end
 
@@ -1255,11 +1497,15 @@ local function buildColorpicker(container, text, default, callback, flag)
 		if isOpen then closeActivePopup() else openPanel() end
 	end)
 
+	attachContextMenu(Btn, function()
+		return {{Text = "Reset to Default", Callback = function() setColor(defaultVal, true) end}}
+	end)
+
 	registerFlag(flag, {
 		Get = function() return color end,
 		Set = function(v) setColor(v, false) end
 	})
-	if callback then callback(color) end
+	if callback then safeCall(callback, color) end
 
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) setColor(v, false) end,
@@ -1273,6 +1519,7 @@ end
 -- ============================================================
 local function buildKeybind(container, text, default, callback, flag)
 	local key = default
+	local defaultVal = key
 	local listening = false
 
 	local Holder = Instance.new("Frame")
@@ -1307,7 +1554,7 @@ local function buildKeybind(container, text, default, callback, flag)
 	local function setKey(k, fromUser)
 		key = k
 		Btn.Text = key and key.Name or "None"
-		if callback then callback(key) end
+		safeCall(callback, key)
 		if fromUser then pushAutoSave() end
 	end
 
@@ -1332,6 +1579,13 @@ local function buildKeybind(container, text, default, callback, flag)
 		end)
 	end)
 
+	attachContextMenu(Btn, function()
+		return {
+			{Text = "Reset to Default", Callback = function() setKey(defaultVal, true) end},
+			{Text = "Unbind", Callback = function() setKey(nil, true) end},
+		}
+	end)
+
 	registerFlag(flag, {
 		Get = function() return key end,
 		Set = function(v) setKey(v, false) end
@@ -1344,10 +1598,97 @@ local function buildKeybind(container, text, default, callback, flag)
 	return api
 end
 
+-- ============================================================
+-- Ortak: Arama Kutulu, Filtrelenebilir Seçenek Listesi
+-- Dropdown ve MultiDropdown aynı liste/arama mantığını paylaşır;
+-- tek fark seçim sonrası kapanıp kapanmaması ve tekli/çoklu seçim.
+-- ============================================================
+local function buildSearchableOptionList(panel, options, isSelectedFn, onPickFn, closeOnPick)
+	local ListLayout = Instance.new("UIListLayout")
+	ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	ListLayout.Parent = panel
+
+	local hasSearch = #options > 4
+
+	local ScrollFrame = Instance.new("ScrollingFrame")
+	ScrollFrame.Size = UDim2.new(1, 0, 1, hasSearch and -24 or 0)
+	ScrollFrame.Position = UDim2.new(0, 0, 0, hasSearch and 24 or 0)
+	ScrollFrame.BackgroundTransparency = 1
+	ScrollFrame.BorderSizePixel = 0
+	ScrollFrame.ScrollBarThickness = 4
+	ScrollFrame.ScrollBarImageColor3 = Theme.Border
+	ScrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+	ScrollFrame.Parent = panel
+
+	local ScrollLayout = Instance.new("UIListLayout")
+	ScrollLayout.Parent = ScrollFrame
+
+	local optionBtns = {}
+
+	if hasSearch then
+		local SearchBox = Instance.new("TextBox")
+		SearchBox.Size = UDim2.new(1, -8, 0, 18)
+		SearchBox.Position = UDim2.new(0, 4, 0, 3)
+		SearchBox.BackgroundColor3 = Theme.Element
+		SearchBox.BorderSizePixel = 0
+		SearchBox.PlaceholderText = "Filtrele..."
+		SearchBox.Text = ""
+		SearchBox.Font = Theme.Font
+		SearchBox.TextSize = 11
+		SearchBox.TextColor3 = Theme.Text
+		SearchBox.PlaceholderColor3 = Theme.SubText
+		SearchBox.ClearTextOnFocus = false
+		SearchBox.Parent = panel
+		stroke(SearchBox, Theme.Border)
+
+		SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+			local query = SearchBox.Text:lower()
+			for opt, optBtn in pairs(optionBtns) do
+				optBtn.Visible = (query == "" or tostring(opt):lower():find(query, 1, true) ~= nil)
+			end
+		end)
+	end
+
+	for _, opt in ipairs(options) do
+		local OptBtn = Instance.new("TextButton")
+		OptBtn.Size = UDim2.new(1, 0, 0, 20)
+		OptBtn.BackgroundColor3 = isSelectedFn(opt) and Theme.Accent or Theme.Element
+		OptBtn.BorderSizePixel = 0
+		OptBtn.Text = tostring(opt)
+		OptBtn.Font = Theme.Font
+		OptBtn.TextSize = Theme.TextSize
+		OptBtn.TextColor3 = Theme.Text
+		OptBtn.TextXAlignment = Enum.TextXAlignment.Left
+		OptBtn.Parent = ScrollFrame
+
+		local OPad = Instance.new("UIPadding")
+		OPad.PaddingLeft = UDim.new(0, 6)
+		OPad.Parent = OptBtn
+
+		optionBtns[opt] = OptBtn
+
+		OptBtn.MouseEnter:Connect(function()
+			if not isSelectedFn(opt) then OptBtn.BackgroundColor3 = Theme.ElementHover end
+		end)
+		OptBtn.MouseLeave:Connect(function()
+			OptBtn.BackgroundColor3 = isSelectedFn(opt) and Theme.Accent or Theme.Element
+		end)
+
+		OptBtn.MouseButton1Click:Connect(function()
+			onPickFn(opt)
+			OptBtn.BackgroundColor3 = isSelectedFn(opt) and Theme.Accent or Theme.Element
+			if closeOnPick then closeActivePopup() end
+		end)
+	end
+end
+
 -- Arama Kutusu İle Otomatik Filtrelenen MultiDropdown
 local function buildMultiDropdown(container, text, options, defaults, callback, flag)
 	local selected = {}
 	for _, v in ipairs(defaults or {}) do selected[v] = true end
+	local defaultSelected = {}
+	for k, v in pairs(selected) do defaultSelected[k] = v end
 	local currentOptions = options
 	local isOpen = false
 
@@ -1391,80 +1732,12 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 		local panelHeight = math.min(#currentOptions * 20 + (hasSearch and 24 or 0), 160)
 
 		openOverlayPanel(Btn, panelHeight, function(panel)
-			local ListLayout = Instance.new("UIListLayout")
-			ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-			ListLayout.Parent = panel
-
-			local ScrollFrame = Instance.new("ScrollingFrame")
-			ScrollFrame.Size = UDim2.new(1, 0, 1, hasSearch and -24 or 0)
-			ScrollFrame.Position = UDim2.new(0, 0, 0, hasSearch and 24 or 0)
-			ScrollFrame.BackgroundTransparency = 1
-			ScrollFrame.BorderSizePixel = 0
-			ScrollFrame.ScrollBarThickness = 4
-			ScrollFrame.ScrollBarImageColor3 = Theme.Border
-			ScrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-			ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-			ScrollFrame.Parent = panel
-
-			local ScrollLayout = Instance.new("UIListLayout")
-			ScrollLayout.Parent = ScrollFrame
-
-			local optionBtns = {}
-
-			if hasSearch then
-				local SearchBox = Instance.new("TextBox")
-				SearchBox.Size = UDim2.new(1, -8, 0, 18)
-				SearchBox.Position = UDim2.new(0, 4, 0, 3)
-				SearchBox.BackgroundColor3 = Theme.Element
-				SearchBox.BorderSizePixel = 0
-				SearchBox.PlaceholderText = "Filtrele..."
-				SearchBox.Text = ""
-				SearchBox.Font = Theme.Font
-				SearchBox.TextSize = 11
-				SearchBox.TextColor3 = Theme.Text
-				SearchBox.PlaceholderColor3 = Theme.SubText
-				SearchBox.ClearTextOnFocus = false
-				SearchBox.Parent = panel
-				stroke(SearchBox, Theme.Border)
-
-				SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
-					local query = SearchBox.Text:lower()
-					for opt, optBtn in pairs(optionBtns) do
-						if query == "" or tostring(opt):lower():find(query, 1, true) then
-							optBtn.Visible = true
-						else
-							optBtn.Visible = false
-						end
-					end
-				end)
-			end
-
-			for _, opt in ipairs(currentOptions) do
-				local OptBtn = Instance.new("TextButton")
-				OptBtn.Size = UDim2.new(1, 0, 0, 20)
-				OptBtn.BackgroundColor3 = selected[opt] and Theme.Accent or Theme.Element
-				OptBtn.BorderSizePixel = 0
-				OptBtn.Text = tostring(opt)
-				OptBtn.Font = Theme.Font
-				OptBtn.TextSize = Theme.TextSize
-				OptBtn.TextColor3 = Theme.Text
-				OptBtn.TextXAlignment = Enum.TextXAlignment.Left
-				OptBtn.Parent = ScrollFrame
-
-				local OPad = Instance.new("UIPadding")
-				OPad.PaddingLeft = UDim.new(0, 6)
-				OPad.Parent = OptBtn
-
-				optionBtns[opt] = OptBtn
-
-				OptBtn.MouseButton1Click:Connect(function()
-					selected[opt] = not selected[opt] or nil
-					OptBtn.BackgroundColor3 = selected[opt] and Theme.Accent or Theme.Element
-					refreshLabel()
-					if callback then callback(selected) end
-					pushAutoSave()
-				end)
-			end
+			buildSearchableOptionList(panel, currentOptions, function(opt) return selected[opt] end, function(opt)
+				selected[opt] = not selected[opt] or nil
+				refreshLabel()
+				safeCall(callback, selected)
+				pushAutoSave()
+			end, false)
 		end, closePanel)
 	end
 
@@ -1476,6 +1749,16 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 		end
 	end)
 
+	attachContextMenu(Btn, function()
+		return {{Text = "Reset to Default", Callback = function()
+			selected = {}
+			for k, v in pairs(defaultSelected) do selected[k] = v end
+			refreshLabel()
+			safeCall(callback, selected)
+			pushAutoSave()
+		end}}
+	end)
+
 	registerFlag(flag, {
 		Get = function() return selected end,
 		Set = function(v)
@@ -1483,7 +1766,7 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 			refreshLabel()
 		end
 	})
-	if callback then callback(selected) end
+	if callback then safeCall(callback, selected) end
 
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) selected = v; refreshLabel() end,
@@ -1498,6 +1781,7 @@ end
 -- Arama Kutusu İle Otomatik Filtrelenen Dropdown
 local function buildDropdown(container, text, options, default, callback, flag)
 	local selected = default or options[1]
+	local defaultVal = selected
 	local currentOptions = options
 	local isOpen = false
 
@@ -1525,7 +1809,7 @@ local function buildDropdown(container, text, options, default, callback, flag)
 	local function selectOption(opt, fromUser)
 		selected = opt
 		Btn.Text = text .. ": " .. tostring(selected)
-		if callback then callback(opt) end
+		safeCall(callback, opt)
 		if fromUser then pushAutoSave() end
 	end
 
@@ -1539,80 +1823,9 @@ local function buildDropdown(container, text, options, default, callback, flag)
 		local panelHeight = math.min(#currentOptions * 20 + (hasSearch and 24 or 0), 160)
 
 		openOverlayPanel(Btn, panelHeight, function(panel)
-			local ListLayout = Instance.new("UIListLayout")
-			ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-			ListLayout.Parent = panel
-
-			local ScrollFrame = Instance.new("ScrollingFrame")
-			ScrollFrame.Size = UDim2.new(1, 0, 1, hasSearch and -24 or 0)
-			ScrollFrame.Position = UDim2.new(0, 0, 0, hasSearch and 24 or 0)
-			ScrollFrame.BackgroundTransparency = 1
-			ScrollFrame.BorderSizePixel = 0
-			ScrollFrame.ScrollBarThickness = 4
-			ScrollFrame.ScrollBarImageColor3 = Theme.Border
-			ScrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-			ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-			ScrollFrame.Parent = panel
-
-			local ScrollLayout = Instance.new("UIListLayout")
-			ScrollLayout.Parent = ScrollFrame
-
-			local optionBtns = {}
-
-			if hasSearch then
-				local SearchBox = Instance.new("TextBox")
-				SearchBox.Size = UDim2.new(1, -8, 0, 18)
-				SearchBox.Position = UDim2.new(0, 4, 0, 3)
-				SearchBox.BackgroundColor3 = Theme.Element
-				SearchBox.BorderSizePixel = 0
-				SearchBox.PlaceholderText = "Filtrele..."
-				SearchBox.Text = ""
-				SearchBox.Font = Theme.Font
-				SearchBox.TextSize = 11
-				SearchBox.TextColor3 = Theme.Text
-				SearchBox.PlaceholderColor3 = Theme.SubText
-				SearchBox.ClearTextOnFocus = false
-				SearchBox.Parent = panel
-				stroke(SearchBox, Theme.Border)
-
-				SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
-					local query = SearchBox.Text:lower()
-					for opt, optBtn in pairs(optionBtns) do
-						if query == "" or tostring(opt):lower():find(query, 1, true) then
-							optBtn.Visible = true
-						else
-							optBtn.Visible = false
-						end
-					end
-				end)
-			end
-
-			for _, opt in ipairs(currentOptions) do
-				local OptBtn = Instance.new("TextButton")
-				OptBtn.Size = UDim2.new(1, 0, 0, 20)
-				OptBtn.BackgroundColor3 = Theme.Element
-				OptBtn.BorderSizePixel = 0
-				OptBtn.Text = tostring(opt)
-				OptBtn.Font = Theme.Font
-				OptBtn.TextSize = Theme.TextSize
-				OptBtn.TextColor3 = Theme.Text
-				OptBtn.TextXAlignment = Enum.TextXAlignment.Left
-				OptBtn.Parent = ScrollFrame
-
-				local OPad = Instance.new("UIPadding")
-				OPad.PaddingLeft = UDim.new(0, 6)
-				OPad.Parent = OptBtn
-
-				optionBtns[opt] = OptBtn
-
-				OptBtn.MouseEnter:Connect(function() OptBtn.BackgroundColor3 = Theme.Accent end)
-				OptBtn.MouseLeave:Connect(function() OptBtn.BackgroundColor3 = Theme.Element end)
-
-				OptBtn.MouseButton1Click:Connect(function()
-					selectOption(opt, true)
-					closeActivePopup()
-				end)
-			end
+			buildSearchableOptionList(panel, currentOptions, function(opt) return opt == selected end, function(opt)
+				selectOption(opt, true)
+			end, true)
 		end, closePanel)
 	end
 
@@ -1624,8 +1837,12 @@ local function buildDropdown(container, text, options, default, callback, flag)
 		end
 	end)
 
+	attachContextMenu(Btn, function()
+		return {{Text = "Reset to Default", Callback = function() selectOption(defaultVal, true) end}}
+	end)
+
 	registerFlag(flag, {Get = function() return selected end, Set = function(v) selectOption(v, false) end})
-	if callback then callback(selected) end
+	if callback then safeCall(callback, selected) end
 
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) selectOption(v, false) end,
@@ -1666,7 +1883,7 @@ local function buildSelectable(container, text, defaultSelected, callback)
 	Btn.MouseButton1Click:Connect(function()
 		state = not state
 		Btn.BackgroundColor3 = state and Theme.Accent or Theme.Element
-		if callback then callback(state) end
+		safeCall(callback, state)
 	end)
 
 	local api = attachDependencyAPI(Btn, {
@@ -1724,7 +1941,7 @@ local function buildRadioButton(container, text, active, callback, group)
 	local function setState(v)
 		state = v
 		Dot.Visible = state
-		if callback then callback(state) end
+		safeCall(callback, state)
 	end
 
 	local api = { Set = function(v) setState(v) end, Get = function() return state end }
@@ -1745,6 +1962,80 @@ local function buildRadioButton(container, text, active, callback, group)
 	end)
 
 	return attachDependencyAPI(Holder, api)
+end
+
+-- ============================================================
+-- YENİ: Splitter — iki scope'u yan yana koyup ortadaki çizgiden
+-- genişlik ayarlatan hafif bir dockspace alternatifi.
+-- ============================================================
+local function buildSplitterFrames(container, ratio, height)
+	ratio = math.clamp(ratio or 0.5, 0.1, 0.9)
+	height = height or 160
+
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(1, 0, 0, height)
+	Holder.BackgroundTransparency = 1
+	Holder.Parent = container
+
+	local LeftPane = Instance.new("Frame")
+	LeftPane.Size = UDim2.new(ratio, -3, 1, 0)
+	LeftPane.Position = UDim2.new(0, 0, 0, 0)
+	LeftPane.BackgroundTransparency = 1
+	LeftPane.Parent = Holder
+
+	local Divider = Instance.new("Frame")
+	Divider.Size = UDim2.new(0, 4, 1, 0)
+	Divider.Position = UDim2.new(ratio, -2, 0, 0)
+	Divider.BackgroundColor3 = Theme.SeparatorLine
+	Divider.BorderSizePixel = 0
+	Divider.Active = true
+	Divider.Parent = Holder
+
+	local RightPane = Instance.new("Frame")
+	RightPane.Size = UDim2.new(1 - ratio, -3, 1, 0)
+	RightPane.Position = UDim2.new(ratio, 4, 0, 0)
+	RightPane.BackgroundTransparency = 1
+	RightPane.Parent = Holder
+
+	local function layoutPane(pane)
+		local Pad = Instance.new("UIPadding")
+		Pad.PaddingRight = UDim.new(0, 2)
+		Pad.Parent = pane
+		local Layout = Instance.new("UIListLayout")
+		Layout.SortOrder = Enum.SortOrder.LayoutOrder
+		Layout.Padding = UDim.new(0, Theme.ItemSpacing or 4)
+		Layout.Parent = pane
+	end
+	layoutPane(LeftPane)
+	layoutPane(RightPane)
+
+	local dragging = false
+	Divider.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+		end
+	end)
+
+	track(UIS.InputEnded:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+			dragging = false
+		end
+	end))
+
+	track(UIS.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local relX = math.clamp((input.Position.X - Holder.AbsolutePosition.X) / Holder.AbsoluteSize.X, 0.1, 0.9)
+			LeftPane.Size = UDim2.new(relX, -3, 1, 0)
+			Divider.Position = UDim2.new(relX, -2, 0, 0)
+			RightPane.Size = UDim2.new(1 - relX, -3, 1, 0)
+			RightPane.Position = UDim2.new(relX, 4, 0, 0)
+		end
+	end))
+
+	Divider.MouseEnter:Connect(function() Divider.BackgroundColor3 = Theme.Grabber end)
+	Divider.MouseLeave:Connect(function() Divider.BackgroundColor3 = Theme.SeparatorLine end)
+
+	return LeftPane, RightPane
 end
 
 -- ============================================================
@@ -1939,8 +2230,12 @@ local function buildRow(container, height, gap)
 	end
 
 	function Row:AddSlider(text, min, max, default, callback, flag, widthScale)
+		-- NOT: Önceden RowFrame:GetChildren() ile "son eklenen child" bulunmaya
+		-- çalışılıyordu; bu kırılgandı (UIListLayout de bir child, sıralama
+		-- garantisi net değil). buildSlider zaten Holder'ı api.Instance
+		-- üzerinden döndürüyor, direkt onu kullanmak hem daha kısa hem güvenli.
 		local api = buildSlider(RowFrame, text, min, max, default, callback, flag)
-		flexify(RowFrame:GetChildren()[#RowFrame:GetChildren()], widthScale)
+		flexify(api.Instance, widthScale)
 		return api
 	end
 
@@ -1987,6 +2282,9 @@ local function buildScope(container)
 	function Scope:AddTextbox(text, default, placeholder, callback, flag)
 		return buildTextbox(container, text, default, placeholder, callback, flag)
 	end
+	function Scope:AddNumberInput(text, min, max, default, step, callback, flag)
+		return buildNumberInput(container, text, min, max, default, step, callback, flag)
+	end
 	function Scope:AddKeybind(text, default, callback, flag)
 		return buildKeybind(container, text, default, callback, flag)
 	end
@@ -2010,6 +2308,11 @@ local function buildScope(container)
 	end
 	function Scope:AddRow(height, gap)
 		return buildRow(container, height, gap)
+	end
+	function Scope:AddSplitter(ratio, height)
+		-- İki panelli, ortadan sürüklenerek boyutlanabilen basit bir bölünmüş görünüm.
+		local left, right = buildSplitterFrames(container, ratio, height)
+		return buildScope(left), buildScope(right)
 	end
 	function Scope:AddSection(title, opts)
 		local Content = buildSectionHeader(container, title, opts)
@@ -2274,7 +2577,7 @@ function Library:CreateWindow(title, pos, size, opts)
 		MenuBtn.MouseEnter:Connect(function() MenuBtn.TextColor3 = Theme.Grabber end)
 		MenuBtn.MouseLeave:Connect(function() MenuBtn.TextColor3 = Theme.Text end)
 		MenuBtn.MouseButton1Click:Connect(function()
-			if callback then callback(MenuBtn) end
+			safeCall(callback, MenuBtn)
 		end)
 		return MenuBtn
 	end
@@ -2388,8 +2691,165 @@ function Library:CreateWindow(title, pos, size, opts)
 		return Category
 	end
 
+	-- ============================================================
+	-- YENİ: Global Arama / Command Palette (Ctrl+F)
+	-- Pencerenin tüm kategorilerini/tab'lerini tarar, eşleşen widget'a
+	-- tıklanınca ilgili tab'e geçip görünüme kaydırır.
+	-- ============================================================
+	local function collectSearchIndex()
+		local results = {}
+		for _, cat in ipairs(Window.Categories) do
+			for _, desc in ipairs(cat.Page:GetDescendants()) do
+				if (desc:IsA("TextLabel") or desc:IsA("TextButton") or desc:IsA("TextBox"))
+					and desc.Text ~= "" and desc.Text ~= "..." then
+					table.insert(results, {Text = desc.Text, Category = cat, Instance = desc})
+				end
+			end
+		end
+		return results
+	end
+
+	local function openCommandPalette()
+		local Catcher = Instance.new("TextButton")
+		Catcher.Size = UDim2.new(1, 0, 1, 0)
+		Catcher.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		Catcher.BackgroundTransparency = 0.4
+		Catcher.Text = ""
+		Catcher.AutoButtonColor = false
+		Catcher.ZIndex = 20000
+		Catcher.Parent = getScreenGui()
+
+		local Panel = Instance.new("Frame")
+		Panel.Size = UDim2.new(0, 280, 0, 220)
+		Panel.Position = UDim2.new(0.5, 0, 0.35, 0)
+		Panel.AnchorPoint = Vector2.new(0.5, 0.5)
+		Panel.BackgroundColor3 = Theme.Background
+		Panel.BorderSizePixel = 0
+		Panel.ZIndex = 20001
+		Panel.Parent = Catcher
+		stroke(Panel, Theme.Border)
+
+		local Pad = Instance.new("UIPadding")
+		Pad.PaddingLeft = UDim.new(0, 6)
+		Pad.PaddingRight = UDim.new(0, 6)
+		Pad.PaddingTop = UDim.new(0, 6)
+		Pad.PaddingBottom = UDim.new(0, 6)
+		Pad.Parent = Panel
+
+		local Layout = Instance.new("UIListLayout")
+		Layout.Padding = UDim.new(0, 4)
+		Layout.Parent = Panel
+
+		local SearchBox = Instance.new("TextBox")
+		SearchBox.Size = UDim2.new(1, 0, 0, 22)
+		SearchBox.BackgroundColor3 = Theme.Element
+		SearchBox.BorderSizePixel = 0
+		SearchBox.PlaceholderText = "Widget ara... (" .. title .. ")"
+		SearchBox.Text = ""
+		SearchBox.Font = Theme.Font
+		SearchBox.TextSize = Theme.TextSize
+		SearchBox.TextColor3 = Theme.Text
+		SearchBox.PlaceholderColor3 = Theme.SubText
+		SearchBox.ClearTextOnFocus = false
+		SearchBox.ZIndex = 20002
+		SearchBox.Parent = Panel
+		stroke(SearchBox, Theme.Border)
+
+		local ResultsFrame = Instance.new("ScrollingFrame")
+		ResultsFrame.Size = UDim2.new(1, 0, 1, -26)
+		ResultsFrame.BackgroundTransparency = 1
+		ResultsFrame.BorderSizePixel = 0
+		ResultsFrame.ScrollBarThickness = 4
+		ResultsFrame.ScrollBarImageColor3 = Theme.Border
+		ResultsFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+		ResultsFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+		ResultsFrame.ZIndex = 20002
+		ResultsFrame.Parent = Panel
+
+		local ResultsLayout = Instance.new("UIListLayout")
+		ResultsLayout.Padding = UDim.new(0, 2)
+		ResultsLayout.Parent = ResultsFrame
+
+		local function close()
+			Catcher:Destroy()
+		end
+		Catcher.MouseButton1Click:Connect(close)
+
+		local function jumpTo(result)
+			close()
+			for _, c in ipairs(Window.Categories) do
+				local isTarget = (c == result.Category)
+				c.Page.Visible = isTarget
+				c.TabBtn.BackgroundColor3 = isTarget and Theme.Accent or Theme.Element
+				c.TabBtn.TextColor3 = isTarget and Theme.Text or Theme.SubText
+			end
+			task.wait()
+			local target = result.Instance
+			pcall(function()
+				local page = result.Category.Page
+				local targetY = target.AbsolutePosition.Y - page.AbsolutePosition.Y + page.CanvasPosition.Y - 20
+				page.CanvasPosition = Vector2.new(0, math.max(0, targetY))
+			end)
+			local flashTarget = target:FindFirstAncestorOfClass("Frame")
+			if flashTarget then
+				local s = stroke(flashTarget, Theme.Grabber, 2)
+				task.delay(0.8, function() if s then s:Destroy() end end)
+			end
+		end
+
+		local function refresh(query)
+			for _, c in ipairs(ResultsFrame:GetChildren()) do
+				if c:IsA("TextButton") then c:Destroy() end
+			end
+			if query == "" then return end
+
+			local results = collectSearchIndex()
+			local shown = 0
+			for _, r in ipairs(results) do
+				if r.Text:lower():find(query:lower(), 1, true) then
+					shown = shown + 1
+					if shown > 40 then break end
+
+					local Btn = Instance.new("TextButton")
+					Btn.Size = UDim2.new(1, 0, 0, 20)
+					Btn.BackgroundColor3 = Theme.Element
+					Btn.BorderSizePixel = 0
+					Btn.Text = r.Text
+					Btn.Font = Theme.Font
+					Btn.TextSize = 11
+					Btn.TextColor3 = Theme.Text
+					Btn.TextXAlignment = Enum.TextXAlignment.Left
+					Btn.ZIndex = 20003
+					Btn.Parent = ResultsFrame
+
+					local IPad = Instance.new("UIPadding")
+					IPad.PaddingLeft = UDim.new(0, 6)
+					IPad.Parent = Btn
+
+					Btn.MouseEnter:Connect(function() Btn.BackgroundColor3 = Theme.Accent end)
+					Btn.MouseLeave:Connect(function() Btn.BackgroundColor3 = Theme.Element end)
+					Btn.MouseButton1Click:Connect(function() jumpTo(r) end)
+				end
+			end
+		end
+
+		SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+			refresh(SearchBox.Text)
+		end)
+
+		SearchBox:CaptureFocus()
+	end
+
+	Window.SearchConnection = track(UIS.InputBegan:Connect(function(input, gpe)
+		if gpe or not Main.Visible then return end
+		if input.KeyCode == Enum.KeyCode.F and (UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.RightControl)) then
+			openCommandPalette()
+		end
+	end))
+
 	function Window:Destroy()
 		closeActivePopup()
+		if Window.SearchConnection then Window.SearchConnection:Disconnect() end
 		if Library.ToolWindows.Config == Window then Library.ToolWindows.Config = nil end
 		if Library.ToolWindows.Style == Window then Library.ToolWindows.Style = nil end
 		Main:Destroy()
@@ -2410,19 +2870,20 @@ end
 -- Tools Pencereleri
 -- ============================================================
 
-function Library:CreateConfigWindow()
-	local ConfigWin = Library:CreateWindow("Config Manager", UDim2.new(0, 150, 0, 150), UDim2.new(0, 300, 0, 340))
-	local MainTab = ConfigWin:AddCategory("Configs")
-
-	MainTab:AddLabel("Konfigürasyon Yönetimi")
-	local nameBox = MainTab:AddTextbox("Config Adı", "", "Dosya adı gir...")
+-- Config Manager UI'sini herhangi bir Scope içine ekler. Hem
+-- Library:CreateConfigWindow (kendi penceresi) hem de gelecekte bir
+-- tab içine eklenmek istenirse tek yerden çağrılır; mantık artık
+-- tek bir yerde yaşıyor.
+local function populateConfigManager(scope)
+	scope:AddLabel("Konfigürasyon Yönetimi")
+	local nameBox = scope:AddTextbox("Config Adı", "", "Dosya adı gir...")
 
 	local function getConfigList()
 		local list = Library:ListConfigs()
 		return #list > 0 and list or {"None"}
 	end
 
-	local configDropdown = MainTab:AddDropdown("Kayıtlı Configler", getConfigList(), nil, nil, nil)
+	local configDropdown = scope:AddDropdown("Kayıtlı Configler", getConfigList(), nil, nil, nil)
 
 	local autoLoadFile = Library.ConfigFolder .. "/autoload.txt"
 	local function getAutoLoadName()
@@ -2433,22 +2894,22 @@ function Library:CreateConfigWindow()
 		return "None"
 	end
 
-	local autoLoadLabel = MainTab:AddLabel("Auto Load: " .. getAutoLoadName())
+	local autoLoadLabel = scope:AddLabel("Auto Load: " .. getAutoLoadName())
 
-	MainTab:AddButton("Save Config", function()
+	scope:AddButton("Save Config", function()
 		local name = nameBox.Get()
 		if name == "" then return end
 		Library:SaveConfig(name)
 		configDropdown.Refresh(getConfigList())
 	end)
 
-	MainTab:AddButton("Load Config", function()
+	scope:AddButton("Load Config", function()
 		local name = configDropdown.Get()
 		if name == "None" then return end
 		Library:LoadConfig(name)
 	end)
 
-	MainTab:AddButton("Delete Config", function()
+	scope:AddButton("Delete Config", function()
 		local name = configDropdown.Get()
 		if name == "None" or not hasFileApi() then return end
 		Library:ConfirmModal("Config Silme Onayı", "'" .. name .. "' isimli konfigürasyon silinecek. Emin misin?", function()
@@ -2465,7 +2926,7 @@ function Library:CreateConfigWindow()
 		end)
 	end)
 
-	MainTab:AddButton("Set Auto Load Config", function()
+	scope:AddButton("Set Auto Load Config", function()
 		local name = configDropdown.Get()
 		if name == "None" or not hasFileApi() then return end
 		ensureFolder()
@@ -2474,7 +2935,7 @@ function Library:CreateConfigWindow()
 		Library:Notify("AutoLoad Ayarlandı", name .. " varsayılan olarak ayarlandı.", 3, "info")
 	end)
 
-	MainTab:AddButton("Clear Auto Load Config", function()
+	scope:AddButton("Clear Auto Load Config", function()
 		if hasFileApi() and isfile(autoLoadFile) then
 			delfile(autoLoadFile)
 		end
@@ -2482,11 +2943,23 @@ function Library:CreateConfigWindow()
 		Library:Notify("AutoLoad Temizlendi", "Otomatik yükleme kaldırıldı.", 3, "info")
 	end)
 
-	MainTab:AddCheckbox("Auto Save Enabled", Library.AutoSaveEnabled, function(v)
+	scope:AddCheckbox("Auto Save Enabled", Library.AutoSaveEnabled, function(v)
 		local name = configDropdown.Get()
 		Library:SetAutoSave(v, name ~= "None" and name or nil)
 	end)
 
+	if hasFileApi() and isfile(autoLoadFile) then
+		local autoName = readfile(autoLoadFile)
+		if autoName and autoName ~= "" and isfile(Library.ConfigFolder .. "/" .. autoName .. ".json") then
+			Library:LoadConfig(autoName)
+		end
+	end
+end
+
+function Library:CreateConfigWindow()
+	local ConfigWin = Library:CreateWindow("Config Manager", UDim2.new(0, 150, 0, 150), UDim2.new(0, 300, 0, 340))
+	local MainTab = ConfigWin:AddCategory("Configs")
+	populateConfigManager(MainTab)
 	return ConfigWin
 end
 
@@ -2538,90 +3011,32 @@ function Library:CreateStyleEditorWindow()
 	return StyleWin
 end
 
-function Library:CreateConfigTab(Window, categoryName)
-	local Category = Window:AddCategory(categoryName or "Settings")
-	Category:AddLabel("Config Manager")
-
-	local nameBox = Category:AddTextbox("Config Adı", "", "Config ismi...")
-
-	local function getConfigList()
-		local list = Library:ListConfigs()
-		return #list > 0 and list or {"None"}
+-- ============================================================
+-- YENİ: Library:Unload()
+-- Tüm pencereleri, global GUI parçalarını (Notify/Overlay/Tooltip)
+-- ve modül seviyesindeki UserInputService bağlantılarını tek seferde
+-- temizler. Script'i tamamen bırakmadan önce çağırın.
+-- ============================================================
+function Library:Unload()
+	for _, conn in ipairs(Library.Connections) do
+		pcall(function() conn:Disconnect() end)
 	end
+	Library.Connections = {}
 
-	local configDropdown = Category:AddDropdown("Saved Configs", getConfigList(), nil, nil, nil)
-
-	local autoLoadFile = Library.ConfigFolder .. "/autoload.txt"
-	local function getAutoLoadName()
-		if hasFileApi() and isfile(autoLoadFile) then
-			local content = readfile(autoLoadFile)
-			if content and #content > 0 then return content end
-		end
-		return "None"
-	end
-
-	local autoLoadLabel = Category:AddLabel("Auto Load Config: " .. getAutoLoadName())
-
-	Category:AddButton("Save Config", function()
-		local name = nameBox.Get()
-		if name == "" then return end
-		Library:SaveConfig(name)
-		configDropdown.Refresh(getConfigList())
-	end)
-
-	Category:AddButton("Load Config", function()
-		local name = configDropdown.Get()
-		if name == "None" then return end
-		Library:LoadConfig(name)
-	end)
-
-	Category:AddButton("Delete Config", function()
-		local name = configDropdown.Get()
-		if name == "None" or not hasFileApi() then return end
-		Library:ConfirmModal("Config Silme Onayı", "'" .. name .. "' isimli konfigürasyon silinecek. Emin misin?", function()
-			local path = Library.ConfigFolder .. "/" .. name .. ".json"
-			if isfile(path) then
-				delfile(path)
-				if getAutoLoadName() == name then
-					delfile(autoLoadFile)
-					autoLoadLabel.Text = "Auto Load Config: None"
-				end
-				configDropdown.Refresh(getConfigList())
-				Library:Notify("Config Silindi", name .. " başarıyla silindi.", 3, "warning")
-			end
-		end)
-	end)
-
-	Category:AddButton("Set Auto Load Config", function()
-		local name = configDropdown.Get()
-		if name == "None" or not hasFileApi() then return end
-		ensureFolder()
-		writefile(autoLoadFile, name)
-		autoLoadLabel.Text = "Auto Load Config: " .. name
-		Library:Notify("AutoLoad Ayarlandı", name .. " varsayılan olarak ayarlandı.", 3, "info")
-	end)
-
-	Category:AddButton("Clear Auto Load Config", function()
-		if hasFileApi() and isfile(autoLoadFile) then
-			delfile(autoLoadFile)
-		end
-		autoLoadLabel.Text = "Auto Load Config: None"
-		Library:Notify("AutoLoad Temizlendi", "Otomatik yükleme kaldırıldı.", 3, "info")
-	end)
-
-	Category:AddCheckbox("Auto Save", Library.AutoSaveEnabled, function(v)
-		local name = configDropdown.Get()
-		Library:SetAutoSave(v, name ~= "None" and name or nil)
-	end)
-
-	if hasFileApi() and isfile(autoLoadFile) then
-		local autoName = readfile(autoLoadFile)
-		if autoName and autoName ~= "" and isfile(Library.ConfigFolder .. "/" .. autoName .. ".json") then
-			Library:LoadConfig(autoName)
+	for i = #Library.Windows, 1, -1 do
+		local win = Library.Windows[i]
+		if win.Destroy then
+			pcall(function() win:Destroy() end)
 		end
 	end
+	Library.Windows = {}
+	Library.ToolWindows = {}
+	Library.Flags = {}
 
-	return Category
+	closeActivePopup()
+
+	local gui = PlayerGui:FindFirstChild("ImGuiLibrary")
+	if gui then gui:Destroy() end
 end
 
 return Library
