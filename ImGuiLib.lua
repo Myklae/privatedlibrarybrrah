@@ -35,6 +35,7 @@ Library.__index = Library
 Library.Windows = {}
 Library.ToolWindows = {}
 Library.Flags = {}
+Library.RegisteredKeybinds = {}
 Library.ConfigFolder = "ImGuiConfigs"
 Library.AutoSaveEnabled = false
 Library.CurrentConfig = nil
@@ -48,9 +49,32 @@ local function track(conn)
 	return conn
 end
 
+-- Keybind Kayıt Kaydı
+function Library:RegisterKeybind(name, getKeyFn, setKeyFn)
+	local entry = {
+		Name = name,
+		GetKey = getKeyFn,
+		SetKey = setKeyFn
+	}
+	table.insert(Library.RegisteredKeybinds, entry)
+	return entry
+end
+
 -- ============================================================
--- Helper Functions
+-- Helper Functions & Executor Support
 -- ============================================================
+local function getParentGui()
+	if typeof(gethui) == "function" then
+		local ok, res = pcall(gethui)
+		if ok and res then return res end
+	end
+	if typeof(gethiddenui) == "function" then
+		local ok, res = pcall(gethiddenui)
+		if ok and res then return res end
+	end
+	return PlayerGui
+end
+
 local function stroke(inst, color, thickness)
 	local s = Instance.new("UIStroke")
 	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
@@ -78,13 +102,14 @@ local function formatValue(format, v)
 end
 
 local function getScreenGui()
-	local existing = PlayerGui:FindFirstChild("ImGuiLibrary")
+	local parent = getParentGui()
+	local existing = parent:FindFirstChild("ImGuiLibrary")
 	if existing then return existing end
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "ImGuiLibrary"
 	gui.ResetOnSpawn = false
 	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	gui.Parent = PlayerGui
+	gui.Parent = parent
 	return gui
 end
 
@@ -317,7 +342,6 @@ track(UIS.InputChanged:Connect(function(input)
 	end
 end))
 
--- Geliştirilmiş Düzeltilmiş bindTooltip (API veya GuiObject uyumlu)
 local function bindTooltip(target, text)
 	if not target then return end
 	local inst = target
@@ -359,12 +383,7 @@ local function closeActivePopup()
 	end
 end
 
--- ============================================================
 -- Sürükleme (Drag) Sistemi
--- NOT: Artık SADECE verilen handle'lardan (varsayılan: TitleBar)
--- sürükleme başlatılabiliyor. Böylece slider/dropdown gibi
--- elementlere tıklarken pencere kaymıyor.
--- ============================================================
 local function makeDraggable(handles, target)
 	if type(handles) ~= "table" then handles = {handles} end
 	local dragging = false
@@ -449,12 +468,6 @@ local function openOverlayPanel(anchor, height, buildFn, onClose, overrideWidth)
 	ActivePopup = { catcher = catcher, panel = panel, onClose = onClose }
 end
 
--- ============================================================
--- YENİ: Genel Sağ Tık Context Menu
--- Herhangi bir widget'a sağ tıklandığında küçük bir aksiyon menüsü açar.
--- itemsFn() -> { {Text = "...", Callback = function() ... end}, ... }
--- itemsFn dönen liste boşsa (veya nil ise) menü açılmaz.
--- ============================================================
 local function attachContextMenu(inst, itemsFn)
 	if not inst or typeof(inst) ~= "Instance" then return end
 
@@ -613,11 +626,6 @@ track(UIS.InputEnded:Connect(function(input)
 	end
 end))
 
--- ============================================================
--- YENİ: Global Checkbox/Toggle Keybind Registry
--- Herhangi bir checkbox'a sağ tıklayıp "Bind Key" ile bir tuş
--- atanabilir; o tuşa basıldığında ilgili checkbox toggle olur.
--- ============================================================
 local KeybindToggles = {}
 
 track(UIS.InputBegan:Connect(function(input, gpe)
@@ -630,8 +638,8 @@ track(UIS.InputBegan:Connect(function(input, gpe)
 	end
 end))
 
--- Helper: Add Dependency Support To Widget API
-local function attachDependencyAPI(holder, api)
+-- Helper: Add Dependency API & Dynamic Element Deletion API
+local function attachDependencyAPI(holder, api, flag)
 	api.Instance = holder
 	api.Holder = holder
 
@@ -661,6 +669,16 @@ local function attachDependencyAPI(holder, api)
 		update()
 		return api
 	end
+
+	function api.Destroy()
+		if flag and Library.Flags[flag] then
+			Library.Flags[flag] = nil
+		end
+		if holder and typeof(holder) == "Instance" then
+			holder:Destroy()
+		end
+	end
+	api.Remove = api.Destroy
 
 	return api
 end
@@ -722,7 +740,7 @@ local function buildSeparator(container, text)
 		flexify(Line)
 	end
 
-	return Row
+	return attachDependencyAPI(Row, {})
 end
 
 local function buildButton(container, text, callback)
@@ -799,8 +817,6 @@ local function buildCheckbox(container, text, default, callback, flag, bindEnabl
 		setState(not state, true)
 	end)
 
-	-- Keybind toggle desteği: kayıt defteri sadece bindEnabled true iken çalışsın diye
-	-- Key alanı nil olduğu sürece global handler zaten eşleşme bulamaz.
 	local keybindEntry = { Key = nil, Toggle = function() setState(not state, true) end }
 	table.insert(KeybindToggles, keybindEntry)
 
@@ -809,23 +825,34 @@ local function buildCheckbox(container, text, default, callback, flag, bindEnabl
 		keybindEntry.Key = k
 	end
 
+	Library:RegisterKeybind("Toggle: " .. text, function() return bindKey end, function(k) setBindKey(k) end)
+
 	attachContextMenu(Holder, function()
 		local items = {{Text = "Reset to Default", Callback = function() setState(defaultVal, true) end}}
 		if bindEnabled then
 			table.insert(items, {Text = "Bind Key: " .. (bindKey and bindKey.Name or "None"), Callback = function()
 				if listeningBind then return end
 				listeningBind = true
+				Library:Notify("Keybind", "Basmak istediğiniz tuşa basın...", 3, "info")
 				if bindConn then bindConn:Disconnect() end
 				bindConn = UIS.InputBegan:Connect(function(bindInput)
 					if bindInput.UserInputType == Enum.UserInputType.Keyboard then
 						setBindKey(bindInput.KeyCode)
 						listeningBind = false
+						Library:Notify("Keybind", "Tuş atandı: " .. bindInput.KeyCode.Name, 2, "success")
+						if bindConn then bindConn:Disconnect(); bindConn = nil end
+					elseif bindInput.UserInputType == Enum.UserInputType.MouseButton1 then
+						listeningBind = false
+						Library:Notify("Keybind", "Tuş ataması iptal edildi.", 2, "warning")
 						if bindConn then bindConn:Disconnect(); bindConn = nil end
 					end
 				end)
 			end})
 			if bindKey then
-				table.insert(items, {Text = "Unbind Key", Callback = function() setBindKey(nil) end})
+				table.insert(items, {Text = "Unbind Key", Callback = function()
+					setBindKey(nil)
+					Library:Notify("Keybind", "Tuş ataması kaldırıldı.", 2, "info")
+				end})
 			end
 		end
 		return items
@@ -840,7 +867,7 @@ local function buildCheckbox(container, text, default, callback, flag, bindEnabl
 		OnChanged = function(cb) table.insert(onChangedCallbacks, cb) end,
 		SetBindKey = function(k) setBindKey(k) end,
 		GetBindKey = function() return bindKey end
-	})
+	}, flag)
 
 	return Holder, api
 end
@@ -914,8 +941,6 @@ local function buildSlider(container, text, min, max, default, callback, flag, d
 	ValueLabel.ZIndex = 4
 	ValueLabel.Parent = Track
 
-	-- Debounce/Throttle: hızlı sürüklemede callback'i her pikselde değil
-	-- en fazla ~50ms'de bir tetikler; görsel güncelleme her zaman anlıktır.
 	local THROTTLE = 0.05
 	local lastFire = 0
 
@@ -946,17 +971,63 @@ local function buildSlider(container, text, min, max, default, callback, flag, d
 		apply(min + (max - min) * r)
 	end
 
+	-- Ctrl + Click ile Elle Değer Girişi (Iconic ImGui)
 	Track.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			if UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.RightControl) then
+				ValueLabel.Visible = false
+				local InputBox = Instance.new("TextBox")
+				InputBox.Size = UDim2.new(1, -8, 1, 0)
+				InputBox.Position = UDim2.new(0, 4, 0, 0)
+				InputBox.BackgroundTransparency = 1
+				InputBox.Text = fmt(value)
+				InputBox.Font = Theme.Font
+				InputBox.TextSize = Theme.TextSize
+				InputBox.TextColor3 = Theme.Text
+				InputBox.TextXAlignment = Enum.TextXAlignment.Left
+				InputBox.ZIndex = 5
+				InputBox.Parent = Track
+
+				InputBox:CaptureFocus()
+
+				local function commit()
+					local num = tonumber(InputBox.Text)
+					if num then
+						apply(num, true)
+						pushAutoSave()
+					end
+					InputBox:Destroy()
+					ValueLabel.Visible = true
+				end
+
+				InputBox.FocusLost:Connect(function()
+					commit()
+				end)
+				return
+			end
+
 			setFromX(input.Position.X)
 			ActiveSlider = { Update = setFromX, Release = function() fireCallback(); pushAutoSave() end }
 		end
 	end)
 
+	-- Scroll Bitişikte Ana Menü Scroll Çakışması Fix
 	if scrollable then
 		local hovering = false
-		Track.MouseEnter:Connect(function() hovering = true end)
-		Track.MouseLeave:Connect(function() hovering = false end)
+		local parentScroll = nil
+		Track.MouseEnter:Connect(function()
+			hovering = true
+			parentScroll = Track:FindFirstAncestorOfClass("ScrollingFrame")
+			if parentScroll then
+				parentScroll.ScrollingEnabled = false
+			end
+		end)
+		Track.MouseLeave:Connect(function()
+			hovering = false
+			if parentScroll then
+				parentScroll.ScrollingEnabled = true
+			end
+		end)
 		local step = decimals > 0 and (1 / mult) or 1
 		track(UIS.InputChanged:Connect(function(input)
 			if hovering and input.UserInputType == Enum.UserInputType.MouseWheel then
@@ -976,7 +1047,7 @@ local function buildSlider(container, text, min, max, default, callback, flag, d
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) apply(v, true) end,
 		Get = function() return value end
-	})
+	}, flag)
 	return api
 end
 
@@ -1108,7 +1179,7 @@ local function buildRangeSlider(container, text, min, max, defaultLow, defaultHi
 	local api = attachDependencyAPI(Holder, {
 		Set = function(l, h) valLow, valHigh = l, h; apply() end,
 		Get = function() return valLow, valHigh end
-	})
+	}, flag)
 	return api
 end
 
@@ -1244,7 +1315,7 @@ local function buildKnob(container, text, values, defaultIndex, callback, flag, 
 	local api = attachDependencyAPI(Holder, {
 		Set = function(i) index = i; apply() end,
 		Get = function() return values[index], index end
-	})
+	}, flag)
 	return Holder, api
 end
 
@@ -1295,15 +1366,10 @@ local function buildTextbox(container, text, default, placeholder, callback, fla
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) value = v; Box.Text = v end,
 		Get = function() return value end
-	})
+	}, flag)
 	return api
 end
 
--- ============================================================
--- YENİ: Numeric Input (Spinner) — ImGui'nin InputInt karşılığı
--- Sliderdan farklı olarak hassas değer girişi için -/+ butonlu,
--- direkt sayı yazılabilen küçük bir kutu.
--- ============================================================
 local function buildNumberInput(container, text, min, max, default, step, callback, flag)
 	min = min or 0
 	max = max or 100
@@ -1398,13 +1464,10 @@ local function buildNumberInput(container, text, min, max, default, step, callba
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) apply(v, false) end,
 		Get = function() return value end
-	})
+	}, flag)
 	return api
 end
 
--- ============================================================
--- YENİ: Progress Bar
--- ============================================================
 local function buildProgressBar(container, text, min, max, default, format)
 	min = min or 0
 	max = max or 100
@@ -1459,9 +1522,6 @@ local function buildProgressBar(container, text, min, max, default, format)
 	return api
 end
 
--- ============================================================
--- YENİ: RGB(A) + Hex Inputlu Colorpicker
--- ============================================================
 local function buildColorpicker(container, text, default, callback, flag, defaultAlpha)
 	local color = default or Color3.fromRGB(255, 255, 255)
 	local alpha = (defaultAlpha ~= nil) and defaultAlpha or 1
@@ -1665,13 +1725,10 @@ local function buildColorpicker(container, text, default, callback, flag, defaul
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v, a) setColor(v, a, false) end,
 		Get = function() return color, alpha end
-	})
+	}, flag)
 	return api
 end
 
--- ============================================================
--- YENİ: Keybind
--- ============================================================
 local function buildKeybind(container, text, default, callback, flag)
 	local key = default
 	local defaultVal = key
@@ -1713,22 +1770,27 @@ local function buildKeybind(container, text, default, callback, flag)
 		if fromUser then pushAutoSave() end
 	end
 
+	Library:RegisterKeybind("Keybind: " .. text, function() return key end, function(k) setKey(k, true) end)
+
 	Btn.MouseButton1Click:Connect(function()
 		if listening then return end
 		listening = true
 		Btn.Text = "..."
 		Btn.BackgroundColor3 = Theme.ElementActive
+		Library:Notify("Keybind", "Basmak istediğiniz tuşa basın...", 3, "info")
 
 		conn = UIS.InputBegan:Connect(function(input, gpe)
 			if input.UserInputType == Enum.UserInputType.Keyboard then
 				setKey(input.KeyCode, true)
 				listening = false
 				Btn.BackgroundColor3 = Theme.Element
+				Library:Notify("Keybind", "Tuş atandı: " .. input.KeyCode.Name, 2, "success")
 				if conn then conn:Disconnect(); conn = nil end
 			elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
 				listening = false
 				Btn.Text = key and key.Name or "None"
 				Btn.BackgroundColor3 = Theme.Element
+				Library:Notify("Keybind", "Tuş ataması iptal edildi.", 2, "warning")
 				if conn then conn:Disconnect(); conn = nil end
 			end
 		end)
@@ -1749,15 +1811,10 @@ local function buildKeybind(container, text, default, callback, flag)
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) setKey(v, false) end,
 		Get = function() return key end
-	})
+	}, flag)
 	return api
 end
 
--- ============================================================
--- Ortak: Arama Kutulu, Filtrelenebilir Seçenek Listesi
--- Dropdown ve MultiDropdown aynı liste/arama mantığını paylaşır;
--- tek fark seçim sonrası kapanıp kapanmaması ve tekli/çoklu seçim.
--- ============================================================
 local function buildSearchableOptionList(panel, options, isSelectedFn, onPickFn, closeOnPick)
 	local ListLayout = Instance.new("UIListLayout")
 	ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -1838,7 +1895,6 @@ local function buildSearchableOptionList(panel, options, isSelectedFn, onPickFn,
 	end
 end
 
--- Arama Kutusu İle Otomatik Filtrelenen MultiDropdown
 local function buildMultiDropdown(container, text, options, defaults, callback, flag)
 	local selected = {}
 	for _, v in ipairs(defaults or {}) do selected[v] = true end
@@ -1929,11 +1985,10 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 			currentOptions = newOptions
 			refreshLabel()
 		end,
-	})
+	}, flag)
 	return api
 end
 
--- Arama Kutusu İle Otomatik Filtrelenen Dropdown
 local function buildDropdown(container, text, options, default, callback, flag)
 	local selected = default or options[1]
 	local defaultVal = selected
@@ -2006,7 +2061,7 @@ local function buildDropdown(container, text, options, default, callback, flag)
 			currentOptions = newOptions
 			selectOption(newOptions[1], false)
 		end
-	})
+	}, flag)
 	return api
 end
 
@@ -2119,10 +2174,6 @@ local function buildRadioButton(container, text, active, callback, group)
 	return attachDependencyAPI(Holder, api)
 end
 
--- ============================================================
--- YENİ: Splitter — iki scope'u yan yana koyup ortadaki çizgiden
--- genişlik ayarlatan hafif bir dockspace alternatifi.
--- ============================================================
 local function buildSplitterFrames(container, ratio, height)
 	ratio = math.clamp(ratio or 0.5, 0.1, 0.9)
 	height = height or 160
@@ -2385,10 +2436,6 @@ local function buildRow(container, height, gap)
 	end
 
 	function Row:AddSlider(text, min, max, default, callback, flag, widthScale, decimals, scrollable)
-		-- NOT: Önceden RowFrame:GetChildren() ile "son eklenen child" bulunmaya
-		-- çalışılıyordu; bu kırılgandı (UIListLayout de bir child, sıralama
-		-- garantisi net değil). buildSlider zaten Holder'ı api.Instance
-		-- üzerinden döndürüyor, direkt onu kullanmak hem daha kısa hem güvenli.
 		local api = buildSlider(RowFrame, text, min, max, default, callback, flag, decimals, scrollable)
 		flexify(api.Instance, widthScale)
 		return api
@@ -2406,6 +2453,14 @@ end
 -- Scope Construction
 local function buildScope(container)
 	local Scope = {}
+
+	function Scope:Clear()
+		for _, child in ipairs(container:GetChildren()) do
+			if not child:IsA("UIPadding") and not child:IsA("UIListLayout") then
+				child:Destroy()
+			end
+		end
+	end
 
 	function Scope:AddLabel(text)
 		local _, api = buildLabel(container, text)
@@ -2465,10 +2520,95 @@ local function buildScope(container)
 		return buildRow(container, height, gap)
 	end
 	function Scope:AddSplitter(ratio, height)
-		-- İki panelli, ortadan sürüklenerek boyutlanabilen basit bir bölünmüş görünüm.
 		local left, right = buildSplitterFrames(container, ratio, height)
 		return buildScope(left), buildScope(right)
 	end
+
+	-- Sub-Tabs Özelliği
+	function Scope:AddSubTabs(tabNames)
+		local SubTabsHolder = Instance.new("Frame")
+		SubTabsHolder.Size = UDim2.new(1, 0, 0, 0)
+		SubTabsHolder.AutomaticSize = Enum.AutomaticSize.Y
+		SubTabsHolder.BackgroundTransparency = 1
+		SubTabsHolder.Parent = container
+
+		local SubTabsLayout = Instance.new("UIListLayout")
+		SubTabsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+		SubTabsLayout.Padding = UDim.new(0, 4)
+		SubTabsLayout.Parent = SubTabsHolder
+
+		local HeaderBar = Instance.new("Frame")
+		HeaderBar.Size = UDim2.new(1, 0, 0, 20)
+		HeaderBar.BackgroundTransparency = 1
+		HeaderBar.Parent = SubTabsHolder
+
+		local HeaderLayout = Instance.new("UIListLayout")
+		HeaderLayout.FillDirection = Enum.FillDirection.Horizontal
+		HeaderLayout.Padding = UDim.new(0, 4)
+		HeaderLayout.Parent = HeaderBar
+
+		local PagesFrame = Instance.new("Frame")
+		PagesFrame.Size = UDim2.new(1, 0, 0, 0)
+		PagesFrame.AutomaticSize = Enum.AutomaticSize.Y
+		PagesFrame.BackgroundTransparency = 1
+		PagesFrame.Parent = SubTabsHolder
+
+		local subScopes = {}
+		local tabBtns = {}
+		local subPages = {}
+
+		local function selectSubTab(name)
+			for tabName, page in pairs(subPages) do
+				page.Visible = (tabName == name)
+				if tabBtns[tabName] then
+					tabBtns[tabName].BackgroundColor3 = (tabName == name) and Theme.Accent or Theme.Element
+					tabBtns[tabName].TextColor3 = (tabName == name) and Theme.Text or Theme.SubText
+				end
+			end
+		end
+
+		for i, name in ipairs(tabNames) do
+			local Btn = Instance.new("TextButton")
+			Btn.Size = UDim2.new(0, 60, 1, 0)
+			Btn.BackgroundColor3 = Theme.Element
+			Btn.BorderSizePixel = 0
+			Btn.Text = name
+			Btn.Font = Theme.Font
+			Btn.TextSize = 11
+			Btn.TextColor3 = Theme.SubText
+			Btn.Parent = HeaderBar
+			stroke(Btn, Theme.Border)
+			tabBtns[name] = Btn
+
+			local Page = Instance.new("Frame")
+			Page.Size = UDim2.new(1, 0, 0, 0)
+			Page.AutomaticSize = Enum.AutomaticSize.Y
+			Page.BackgroundTransparency = 1
+			Page.Visible = (i == 1)
+			Page.Parent = PagesFrame
+
+			local PageLayout = Instance.new("UIListLayout")
+			PageLayout.SortOrder = Enum.SortOrder.LayoutOrder
+			PageLayout.Padding = UDim.new(0, Theme.ItemSpacing or 4)
+			PageLayout.Parent = Page
+
+			subPages[name] = Page
+			subScopes[name] = buildScope(Page)
+
+			Btn.MouseButton1Click:Connect(function()
+				selectSubTab(name)
+			end)
+		end
+
+		selectSubTab(tabNames[1])
+		return subScopes
+	end
+
+	function Scope:AddSubTab(name)
+		local subTabs = Scope:AddSubTabs({name})
+		return subTabs[name]
+	end
+
 	function Scope:AddSection(title, opts)
 		local Content = buildSectionHeader(container, title, opts)
 		return buildScope(Content)
@@ -2673,8 +2813,6 @@ function Library:CreateWindow(title, pos, size, opts)
 		end
 	end)
 
-	-- SADECE TitleBar'dan sürükleme (elementlerin olduğu Body/Tabs/MenuBar
-	-- artık drag handle değil, böylece slider/dropdown vb. tıklarken pencere kaymıyor)
 	makeDraggable({ TitleBar }, Main)
 
 	local ResizeHandle = Instance.new("Frame")
@@ -2741,7 +2879,7 @@ function Library:CreateWindow(title, pos, size, opts)
 	addMenuItem("Examples", function() end)
 
 	addMenuItem("Tools", function(anchorBtn)
-		openOverlayPanel(anchorBtn, 42, function(panel)
+		openOverlayPanel(anchorBtn, 62, function(panel)
 			local ListLayout = Instance.new("UIListLayout")
 			ListLayout.Parent = panel
 
@@ -2784,6 +2922,15 @@ function Library:CreateWindow(title, pos, size, opts)
 					Library.ToolWindows.Style = nil
 				else
 					Library.ToolWindows.Style = Library:CreateStyleEditorWindow()
+				end
+			end)
+
+			makeToolOpt("Keybind List", function()
+				if Library.ToolWindows.Keybinds and Library.ToolWindows.Keybinds.Main and Library.ToolWindows.Keybinds.Main.Parent then
+					Library.ToolWindows.Keybinds:Destroy()
+					Library.ToolWindows.Keybinds = nil
+				else
+					Library.ToolWindows.Keybinds = Library:CreateKeybindListWindow()
 				end
 			end)
 		end, nil, 130)
@@ -2846,11 +2993,6 @@ function Library:CreateWindow(title, pos, size, opts)
 		return Category
 	end
 
-	-- ============================================================
-	-- YENİ: Global Arama / Command Palette (Ctrl+F)
-	-- Pencerenin tüm kategorilerini/tab'lerini tarar, eşleşen widget'a
-	-- tıklanınca ilgili tab'e geçip görünüme kaydırır.
-	-- ============================================================
 	local function collectSearchIndex()
 		local results = {}
 		for _, cat in ipairs(Window.Categories) do
@@ -3007,6 +3149,7 @@ function Library:CreateWindow(title, pos, size, opts)
 		if Window.SearchConnection then Window.SearchConnection:Disconnect() end
 		if Library.ToolWindows.Config == Window then Library.ToolWindows.Config = nil end
 		if Library.ToolWindows.Style == Window then Library.ToolWindows.Style = nil end
+		if Library.ToolWindows.Keybinds == Window then Library.ToolWindows.Keybinds = nil end
 		Main:Destroy()
 		for i, w in ipairs(Library.Windows) do
 			if w == Window then table.remove(Library.Windows, i) break end
@@ -3025,10 +3168,6 @@ end
 -- Tools Pencereleri
 -- ============================================================
 
--- Config Manager UI'sini herhangi bir Scope içine ekler. Hem
--- Library:CreateConfigWindow (kendi penceresi) hem de gelecekte bir
--- tab içine eklenmek istenirse tek yerden çağrılır; mantık artık
--- tek bir yerde yaşıyor.
 local function populateConfigManager(scope)
 	scope:AddLabel("Konfigürasyon Yönetimi")
 	local nameBox = scope:AddTextbox("Config Adı", "", "Dosya adı gir...")
@@ -3166,11 +3305,47 @@ function Library:CreateStyleEditorWindow()
 	return StyleWin
 end
 
+-- Keybind List Tool Window
+function Library:CreateKeybindListWindow()
+	local KeybindWin = Library:CreateWindow("Keybind List", UDim2.new(0, 250, 0, 150), UDim2.new(0, 280, 0, 300))
+	local MainTab = KeybindWin:AddCategory("Keybinds")
+
+	local function refresh()
+		MainTab:Clear()
+		MainTab:AddLabel("Kayıtlı Tuş Atamaları")
+		if #Library.RegisteredKeybinds == 0 then
+			MainTab:AddLabel("Henüz atama yapılmadı.")
+			return
+		end
+
+		for _, kb in ipairs(Library.RegisteredKeybinds) do
+			local currentKey = kb.GetKey()
+			local row = MainTab:AddRow(22, 6)
+			row:AddText(kb.Name, 0.5)
+			row:AddButton(currentKey and currentKey.Name or "None", function()
+				Library:Notify("Keybind", "Yeni tuşa basın...", 3, "info")
+				local conn
+				conn = UIS.InputBegan:Connect(function(input)
+					if input.UserInputType == Enum.UserInputType.Keyboard then
+						kb.SetKey(input.KeyCode)
+						Library:Notify("Keybind", "Tuş atandı: " .. input.KeyCode.Name, 2, "success")
+						conn:Disconnect()
+						refresh()
+					elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
+						conn:Disconnect()
+						refresh()
+					end
+				end)
+			end, 0.5)
+		end
+	end
+
+	refresh()
+	return KeybindWin
+end
+
 -- ============================================================
--- YENİ: Library:Unload()
--- Tüm pencereleri, global GUI parçalarını (Notify/Overlay/Tooltip)
--- ve modül seviyesindeki UserInputService bağlantılarını tek seferde
--- temizler. Script'i tamamen bırakmadan önce çağırın.
+-- Library:Unload()
 -- ============================================================
 function Library:Unload()
 	for _, conn in ipairs(Library.Connections) do
@@ -3187,10 +3362,12 @@ function Library:Unload()
 	Library.Windows = {}
 	Library.ToolWindows = {}
 	Library.Flags = {}
+	Library.RegisteredKeybinds = {}
 
 	closeActivePopup()
 
-	local gui = PlayerGui:FindFirstChild("ImGuiLibrary")
+	local parent = getParentGui()
+	local gui = parent:FindFirstChild("ImGuiLibrary")
 	if gui then gui:Destroy() end
 end
 
