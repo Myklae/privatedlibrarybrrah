@@ -32,6 +32,7 @@ local Theme = {
 local Library = {}
 Library.__index = Library
 Library.Windows = {}
+Library.ToolWindows = {} -- Tools menüsünden açılan pencerelerin referansı
 Library.Flags = {}
 Library.ConfigFolder = "ImGuiConfigs"
 Library.AutoSaveEnabled = false
@@ -606,36 +607,80 @@ local function buildRangeSlider(container, text, min, max, defaultLow, defaultHi
 	}
 end
 
--- NEW IMGUI CONTROL: Rotary Discrete Steps Knob Widget
-local function buildKnob(container, text, values, defaultIndex, callback, flag)
+-- altschuler/imgui-knobs "STEPPED" Variantında Döner Kadran (Boyut Ayarlanabilir)
+local function buildKnob(container, text, values, defaultIndex, callback, flag, size)
 	values = values or {"1", "2", "3"}
+	size = size or 32
 	local index = math.clamp(defaultIndex or 1, 1, #values)
 
+	local knobRadius = size / 2
+	local totalHeight = math.max(size + 8, 26)
+
 	local Holder = Instance.new("Frame")
-	Holder.Size = UDim2.new(1, 0, 0, 26)
+	Holder.Size = UDim2.new(1, 0, 0, totalHeight)
 	Holder.BackgroundTransparency = 1
 	Holder.Parent = container
 
-	local DialBox = Instance.new("Frame")
-	DialBox.Size = UDim2.new(0, 24, 0, 24)
-	DialBox.Position = UDim2.new(0, 0, 0.5, -12)
-	DialBox.BackgroundColor3 = Theme.Element
-	DialBox.BorderSizePixel = 0
-	DialBox.Active = true
-	DialBox.Parent = Holder
-	stroke(DialBox, Theme.Border)
+	local KnobFrame = Instance.new("Frame")
+	KnobFrame.Size = UDim2.new(0, size + 16, 0, totalHeight)
+	KnobFrame.Position = UDim2.new(0, 0, 0, 0)
+	KnobFrame.BackgroundTransparency = 1
+	KnobFrame.Parent = Holder
+
+	local Dial = Instance.new("Frame")
+	Dial.Size = UDim2.new(0, size, 0, size)
+	Dial.Position = UDim2.new(0, 8, 0.5, -knobRadius)
+	Dial.BackgroundColor3 = Theme.Element
+	Dial.BorderSizePixel = 0
+	Dial.Active = true
+	Dial.Parent = KnobFrame
+	stroke(Dial, Theme.Border)
+
+	local DialCorner = Instance.new("UICorner")
+	DialCorner.CornerRadius = UDim.new(1, 0)
+	DialCorner.Parent = Dial
 
 	local Pointer = Instance.new("Frame")
-	Pointer.Size = UDim2.new(0, 2, 0, 8)
+	Pointer.Size = UDim2.new(0, 2, 0, math.floor(knobRadius - 3))
 	Pointer.AnchorPoint = Vector2.new(0.5, 1)
 	Pointer.Position = UDim2.new(0.5, 0, 0.5, 0)
 	Pointer.BackgroundColor3 = Theme.Grabber
 	Pointer.BorderSizePixel = 0
-	Pointer.Parent = DialBox
+	Pointer.Parent = Dial
+
+	-- Stepped Variant için dış dairesel adım çentikleri (Ticks)
+	local Ticks = {}
+	local count = #values
+	local ANGLE_MIN = -135
+	local ANGLE_MAX = 135
+
+	for i = 1, count do
+		local frac = (count > 1) and ((i - 1) / (count - 1)) or 0.5
+		local angleDeg = ANGLE_MIN + (frac * (ANGLE_MAX - ANGLE_MIN))
+		local angleRad = math.rad(angleDeg)
+
+		local dist = knobRadius + 4
+		local offsetX = math.sin(angleRad) * dist
+		local offsetY = -math.cos(angleRad) * dist
+
+		local Tick = Instance.new("Frame")
+		Tick.Size = UDim2.new(0, 3, 0, 3)
+		Tick.AnchorPoint = Vector2.new(0.5, 0.5)
+		Tick.Position = UDim2.new(0.5, offsetX, 0.5, offsetY)
+		Tick.BackgroundColor3 = (i == index) and Theme.Grabber or Theme.SeparatorLine
+		Tick.BorderSizePixel = 0
+		Tick.Parent = Dial
+
+		local TickCorner = Instance.new("UICorner")
+		TickCorner.CornerRadius = UDim.new(1, 0)
+		TickCorner.Parent = Tick
+
+		table.insert(Ticks, Tick)
+	end
 
 	local Label = Instance.new("TextLabel")
-	Label.Size = UDim2.new(1, -32, 1, 0)
-	Label.Position = UDim2.new(0, 32, 0, 0)
+	Label.Size = UDim2.new(1, -(size + 20), 1, 0)
+	Label.Position = UDim2.new(0, size + 20, 0, 0)
 	Label.BackgroundTransparency = 1
 	Label.Font = Theme.Font
 	Label.TextSize = Theme.TextSize
@@ -646,18 +691,23 @@ local function buildKnob(container, text, values, defaultIndex, callback, flag)
 	local function apply()
 		index = math.clamp(index, 1, #values)
 		local currentVal = values[index]
-		Label.Text = text .. ": " .. tostring(currentVal) .. " [" .. tostring(index) .. "/" .. tostring(#values) .. "]"
+		Label.Text = text .. ": " .. tostring(currentVal)
 
-		local stepFrac = (#values > 1) and ((index - 1) / (#values - 1)) or 0.5
-		local angle = -135 + (stepFrac * 270)
-		Pointer.Rotation = angle
+		local frac = (count > 1) and ((index - 1) / (count - 1)) or 0.5
+		local angleDeg = ANGLE_MIN + (frac * (ANGLE_MAX - ANGLE_MIN))
+		Pointer.Rotation = angleDeg
+
+		for i, tick in ipairs(Ticks) do
+			tick.BackgroundColor3 = (i == index) and Theme.Grabber or Theme.SeparatorLine
+			tick.Size = (i == index) and UDim2.new(0, 4, 0, 4) or UDim2.new(0, 3, 0, 3)
+		end
 
 		if callback then callback(currentVal, index) end
 		pushAutoSave()
 	end
 
 	local startX, startIndex
-	DialBox.InputBegan:Connect(function(input)
+	Dial.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			startX = input.Position.X
 			startIndex = index
@@ -840,7 +890,7 @@ local function buildProgressBar(container, text, min, max, default, format)
 	}
 end
 
--- Colorpicker With Direct RGB Numeric Input Textboxes Added
+-- Colorpicker With Direct RGB Numeric Input Textboxes
 local function buildColorpicker(container, text, default, callback, flag)
 	local color = default or Color3.fromRGB(255, 255, 255)
 	local isOpen = false
@@ -920,7 +970,6 @@ local function buildColorpicker(container, text, default, callback, flag)
 		Fill.BorderSizePixel = 0
 		Fill.Parent = Track
 
-		-- Direct RGB Numeric Input Box
 		local ValBox = Instance.new("TextBox")
 		ValBox.Size = UDim2.new(0, 38, 0, 16)
 		ValBox.Position = UDim2.new(1, -42, 0, yPos)
@@ -1514,8 +1563,8 @@ local function buildScope(container)
 	function Scope:AddRangeSlider(text, min, max, defaultLow, defaultHigh, callback, flag)
 		return buildRangeSlider(container, text, min, max, defaultLow, defaultHigh, callback, flag)
 	end
-	function Scope:AddKnob(text, values, defaultIndex, callback, flag)
-		return buildKnob(container, text, values, defaultIndex, callback, flag)
+	function Scope:AddKnob(text, values, defaultIndex, callback, flag, size)
+		return buildKnob(container, text, values, defaultIndex, callback, flag, size)
 	end
 	function Scope:AddTextbox(text, default, placeholder, callback, flag)
 		return buildTextbox(container, text, default, placeholder, callback, flag)
@@ -1597,6 +1646,7 @@ function Library:CreateWindow(title, pos, size, opts)
 	Main.BorderSizePixel = 0
 	Main.Parent = screenGui
 	stroke(Main, Theme.Border)
+	Window.Main = Main
 
 	local TitleBar = Instance.new("Frame")
 	TitleBar.Name = "TitleBar"
@@ -1768,6 +1818,7 @@ function Library:CreateWindow(title, pos, size, opts)
 	addMenuItem("Menu", function() end)
 	addMenuItem("Examples", function() end)
 
+	-- Tools Menüsü (Toggle Pencere Açma/Kapatma Mantığı)
 	addMenuItem("Tools", function(anchorBtn)
 		openOverlayPanel(anchorBtn, 42, function(panel)
 			local ListLayout = Instance.new("UIListLayout")
@@ -1797,12 +1848,23 @@ function Library:CreateWindow(title, pos, size, opts)
 				end)
 			end
 
+			-- Toggle Mantığı: Açıksa kapat, kapalıysa aç
 			makeToolOpt("Config Settings", function()
-				Library:CreateConfigWindow()
+				if Library.ToolWindows.Config and Library.ToolWindows.Config.Main and Library.ToolWindows.Config.Main.Parent then
+					Library.ToolWindows.Config:Destroy()
+					Library.ToolWindows.Config = nil
+				else
+					Library.ToolWindows.Config = Library:CreateConfigWindow()
+				end
 			end)
 
 			makeToolOpt("Style Editor", function()
-				Library:CreateStyleEditorWindow()
+				if Library.ToolWindows.Style and Library.ToolWindows.Style.Main and Library.ToolWindows.Style.Main.Parent then
+					Library.ToolWindows.Style:Destroy()
+					Library.ToolWindows.Style = nil
+				else
+					Library.ToolWindows.Style = Library:CreateStyleEditorWindow()
+				end
 			end)
 		end, nil, 130)
 	end)
@@ -1866,6 +1928,8 @@ function Library:CreateWindow(title, pos, size, opts)
 
 	function Window:Destroy()
 		closeActivePopup()
+		if Library.ToolWindows.Config == Window then Library.ToolWindows.Config = nil end
+		if Library.ToolWindows.Style == Window then Library.ToolWindows.Style = nil end
 		Main:Destroy()
 		for i, w in ipairs(Library.Windows) do
 			if w == Window then table.remove(Library.Windows, i) break end
