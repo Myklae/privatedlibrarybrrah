@@ -39,53 +39,175 @@ Library.RegisteredKeybinds = {}
 Library.ConfigFolder = "ImGuiConfigs"
 Library.AutoSaveEnabled = false
 Library.CurrentConfig = nil
-Library.IDStack = {}
-Library.ZIndexCounter = 100
-
--- Global connection registry, used by Library:Unload() to fully tear down
--- the module-level (non window-scoped) UserInputService connections.
 Library.Connections = {}
+
+-- Signal Listeners for Live Updates
+Library.KeybindChangedCallbacks = {}
+Library.ConfigChangedCallbacks = {}
+Library.ThemeChangedCallbacks = {}
+
+function Library:NotifyThemeChanged()
+	for _, cb in ipairs(Library.ThemeChangedCallbacks) do
+		pcall(cb)
+	end
+end
+
+function Library:RegisterThemeElement(element, propertyName, themeKey, transformFn)
+	local val = Theme[themeKey]
+	element[propertyName] = transformFn and transformFn(val) or val
+	local listener = function()
+		if element and element.Parent then
+			local v = Theme[themeKey]
+			element[propertyName] = transformFn and transformFn(v) or v
+		end
+	end
+	table.insert(Library.ThemeChangedCallbacks, listener)
+	return listener
+end
+
+-- Helper Array Removal
+local function removeCallback(tbl, callback)
+	for i = #tbl, 1, -1 do
+		if tbl[i] == callback then
+			table.remove(tbl, i)
+			break
+		end
+	end
+end
+
+-- Z-Index Management
+Library.FocusedZIndex = 100
+
+-- ID Stack System
+Library.IDStack = {}
+
+function Library:PushID(id)
+	table.insert(Library.IDStack, tostring(id))
+end
+
+function Library:PopID()
+	if #Library.IDStack > 0 then
+		table.remove(Library.IDStack)
+	end
+end
+
+function Library:GetID(key)
+	if not key or key == "" then return nil end
+	if #Library.IDStack == 0 then return key end
+	return table.concat(Library.IDStack, "/") .. "/" .. tostring(key)
+end
 
 local function track(conn)
 	table.insert(Library.Connections, conn)
 	return conn
 end
 
--- Keybind Kayıt Kaydı
-function Library:RegisterKeybind(name, getKeyFn, setKeyFn)
+function Library:NotifyKeybindsChanged()
+	for _, cb in ipairs(Library.KeybindChangedCallbacks) do
+		pcall(cb)
+	end
+end
+
+function Library:NotifyConfigChanged()
+	for _, cb in ipairs(Library.ConfigChangedCallbacks) do
+		pcall(cb)
+	end
+end
+
+local KeybindToggles = {}
+
+-- Keybind Kayıt & Silme Yönetimi (Aynı isimde keybind olursa çakışmayı çözer)
+function Library:RegisterKeybind(name, getKeyFn, setKeyFn, customId)
+	local baseId = customId or Library:GetID(name) or name
+	local uniqueId = baseId
+
+	local count = 0
+	for _, entry in ipairs(Library.RegisteredKeybinds) do
+		if entry.ID == uniqueId or entry.ID:match("^" .. uniqueId:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1") .. "_%d+$") then
+			count = count + 1
+		end
+	end
+
+	if count > 0 then
+		uniqueId = baseId .. "_" .. (count + 1)
+	end
+
 	local entry = {
+		ID = uniqueId,
 		Name = name,
 		GetKey = getKeyFn,
 		SetKey = setKeyFn
 	}
 	table.insert(Library.RegisteredKeybinds, entry)
+	Library:NotifyKeybindsChanged()
 	return entry
 end
 
--- ID Stack System
-function Library:PushID(id)
-	table.insert(Library.IDStack, tostring(id))
-end
-
-function Library:PopID()
-	table.remove(Library.IDStack)
-end
-
-function Library:GetID(label)
-	if #Library.IDStack == 0 then return tostring(label) end
-	return table.concat(Library.IDStack, "/") .. "/" .. tostring(label)
-end
-
--- Z-Index Management
-function Library:GetNextZIndex()
-	Library.ZIndexCounter = Library.ZIndexCounter + 1
-	return Library.ZIndexCounter
-end
-
-function Library:BringToFront(window)
-	if window and window.Main then
-		window.Main.ZIndex = Library:GetNextZIndex()
+function Library:UnregisterKeybind(entry)
+	if not entry then return end
+	for i = #Library.RegisteredKeybinds, 1, -1 do
+		if Library.RegisteredKeybinds[i] == entry then
+			table.remove(Library.RegisteredKeybinds, i)
+			break
+		end
 	end
+	if entry._ToggleEntry then
+		for i = #KeybindToggles, 1, -1 do
+			if KeybindToggles[i] == entry._ToggleEntry then
+				table.remove(KeybindToggles, i)
+				break
+			end
+		end
+	end
+	Library:NotifyKeybindsChanged()
+end
+
+-- ============================================================
+-- Robust Markdown -> Roblox RichText Parser
+-- ============================================================
+local function parseMarkdownLine(line)
+	local headerLevel = 0
+	local content = line
+
+	if line:match("^###%s+") then
+		headerLevel = 3
+		content = line:match("^###%s+(.*)$")
+	elseif line:match("^##%s+") then
+		headerLevel = 2
+		content = line:match("^##%s+(.*)$")
+	elseif line:match("^#%s+") then
+		headerLevel = 1
+		content = line:match("^#%s+(.*)$")
+	end
+
+	content = content:gsub("&", "&amp;")
+	content = content:gsub("%[color=(%#%x+)%](.-)%[%/color%]", "<font color=\"%1\">%2</font>")
+	content = content:gsub("<color=(%#%x+)>(.-)</color>", "<font color=\"%1\">%2</font>")
+	content = content:gsub("%[color=(rgb%b())%](.-)%[%/color%]", "<font color=\"%1\">%2</font>")
+	content = content:gsub("<color=(rgb%b())>(.-)</color>", "<font color=\"%1\">%2</font>")
+	content = content:gsub("~~(.-)~~", "<s>%1</s>")
+	content = content:gsub("`(.-)`", "<font color=\"#66D9EF\" face=\"RobotoMono\">%1</font>")
+	content = content:gsub("%*%*(.-)%*%*", "<b>%1</b>")
+	content = content:gsub("%*([^%*]+)%*", "<i>%1</i>")
+
+	if headerLevel == 1 then
+		content = "<font size=\"20\"><b>" .. content .. "</b></font>"
+	elseif headerLevel == 2 then
+		content = "<font size=\"17\"><b>" .. content .. "</b></font>"
+	elseif headerLevel == 3 then
+		content = "<font size=\"14\"><b>" .. content .. "</b></font>"
+	end
+
+	return content
+end
+
+local function parseMarkdown(text)
+	if type(text) ~= "string" then return tostring(text) end
+	local lines = {}
+	for line in (text .. "\n"):gmatch("(.-)\n") do
+		table.insert(lines, parseMarkdownLine(line))
+	end
+	return table.concat(lines, "\n")
 end
 
 -- ============================================================
@@ -109,6 +231,9 @@ local function stroke(inst, color, thickness)
 	s.Color = color or Theme.Border
 	s.Thickness = thickness or 1
 	s.Parent = inst
+	if not color then
+		Library:RegisterThemeElement(s, "Color", "Border")
+	end
 	return s
 end
 
@@ -129,51 +254,6 @@ local function formatValue(format, v)
 	return tostring(v)
 end
 
--- Markdown -> RichText parsing
-local function escapeRich(s)
-	s = s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
-	return s
-end
-
-local function parseMarkdownLine(line)
-	local headerLevel = 0
-	local content = line
-
-	if line:match("^###%s+") then
-		headerLevel = 3
-		content = line:match("^###%s+(.*)$")
-	elseif line:match("^##%s+") then
-		headerLevel = 2
-		content = line:match("^##%s+(.*)$")
-	elseif line:match("^#%s+") then
-		headerLevel = 1
-		content = line:match("^#%s+(.*)$")
-	end
-
-	content = escapeRich(content)
-	content = content:gsub("%*%*(.-)%*%*", "<b>%1</b>")
-	content = content:gsub("%*(.-)%*", "<i>%1</i>")
-	content = content:gsub("`(.-)`", "<font face=\"RobotoMono\">%1</font>")
-
-	if headerLevel == 1 then
-		content = "<font size=\"20\"><b>" .. content .. "</b></font>"
-	elseif headerLevel == 2 then
-		content = "<font size=\"17\"><b>" .. content .. "</b></font>"
-	elseif headerLevel == 3 then
-		content = "<font size=\"14\"><b>" .. content .. "</b></font>"
-	end
-
-	return content
-end
-
-local function markdownToRichText(text)
-	local lines = {}
-	for line in (text .. "\n"):gmatch("(.-)\n") do
-		table.insert(lines, parseMarkdownLine(line))
-	end
-	return table.concat(lines, "\n")
-end
-
 local function getScreenGui()
 	local parent = getParentGui()
 	local existing = parent:FindFirstChild("ImGuiLibrary")
@@ -186,8 +266,6 @@ local function getScreenGui()
 	return gui
 end
 
--- Every user-supplied callback in the library is routed through this so a
--- broken callback from a consumer script can never freeze/crash the menu.
 local function safeCall(fn, ...)
 	if not fn then return end
 	local ok, err = pcall(fn, ...)
@@ -197,16 +275,26 @@ local function safeCall(fn, ...)
 	return ok
 end
 
--- ============================================================
--- imgui-notify Tarzı Bildirim Sistemi
--- ============================================================
+-- Overlay & Topmost Layer
+local OverlayLayer = Instance.new("Frame")
+OverlayLayer.Name = "OverlayLayer"
+OverlayLayer.Size = UDim2.new(1, 0, 1, 0)
+OverlayLayer.BackgroundTransparency = 1
+OverlayLayer.ZIndex = 50000
+OverlayLayer.Parent = getScreenGui()
+
+local function updateOverlayZIndex()
+	OverlayLayer.ZIndex = Library.FocusedZIndex + 50000
+end
+
+-- Bildirim Sistemi
 local NotifyContainer = Instance.new("Frame")
 NotifyContainer.Name = "NotifyContainer"
 NotifyContainer.Size = UDim2.new(0, 220, 0, 0)
 NotifyContainer.Position = UDim2.new(1, -10, 1, -10)
 NotifyContainer.AnchorPoint = Vector2.new(1, 1)
 NotifyContainer.BackgroundTransparency = 1
-NotifyContainer.ZIndex = 99999
+NotifyContainer.ZIndex = 95000
 NotifyContainer.Parent = getScreenGui()
 
 local NotifyLayout = Instance.new("UIListLayout")
@@ -257,8 +345,9 @@ function Library:Notify(title, message, duration, notifyType)
 	TitleLbl.Font = Theme.Font
 	TitleLbl.TextSize = 11
 	TitleLbl.TextColor3 = Theme.Text
+	TitleLbl.RichText = true
 	TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
-	TitleLbl.Text = title or "Notification"
+	TitleLbl.Text = parseMarkdown(title or "Notification")
 	TitleLbl.Parent = Card
 
 	if message and message ~= "" then
@@ -269,9 +358,10 @@ function Library:Notify(title, message, duration, notifyType)
 		MsgLbl.Font = Theme.Font
 		MsgLbl.TextSize = 10
 		MsgLbl.TextColor3 = Theme.SubText
+		MsgLbl.RichText = true
 		MsgLbl.TextXAlignment = Enum.TextXAlignment.Left
 		MsgLbl.TextWrapped = true
-		MsgLbl.Text = message
+		MsgLbl.Text = parseMarkdown(message)
 		MsgLbl.Parent = Card
 	end
 
@@ -284,9 +374,7 @@ function Library:Notify(title, message, duration, notifyType)
 	end)
 end
 
--- ============================================================
--- Onay Diyaloğu Modal Penceresi (Confirm Modal)
--- ============================================================
+-- Modal Penceresi
 function Library:ConfirmModal(title, text, onConfirm, onCancel)
 	local Catcher = Instance.new("TextButton")
 	Catcher.Size = UDim2.new(1, 0, 1, 0)
@@ -294,7 +382,7 @@ function Library:ConfirmModal(title, text, onConfirm, onCancel)
 	Catcher.BackgroundTransparency = 0.5
 	Catcher.Text = ""
 	Catcher.AutoButtonColor = false
-	Catcher.ZIndex = 10000
+	Catcher.ZIndex = 90000
 	Catcher.Parent = getScreenGui()
 
 	local Modal = Instance.new("Frame")
@@ -304,7 +392,7 @@ function Library:ConfirmModal(title, text, onConfirm, onCancel)
 	Modal.AnchorPoint = Vector2.new(0.5, 0.5)
 	Modal.BackgroundColor3 = Theme.Background
 	Modal.BorderSizePixel = 0
-	Modal.ZIndex = 10001
+	Modal.ZIndex = 90001
 	Modal.Parent = Catcher
 	stroke(Modal, Theme.Border)
 
@@ -325,9 +413,10 @@ function Library:ConfirmModal(title, text, onConfirm, onCancel)
 	TitleLbl.Font = Theme.Font
 	TitleLbl.TextSize = 12
 	TitleLbl.TextColor3 = Theme.Text
+	TitleLbl.RichText = true
 	TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
-	TitleLbl.Text = title or "Confirm"
-	TitleLbl.ZIndex = 10002
+	TitleLbl.Text = parseMarkdown(title or "Confirm")
+	TitleLbl.ZIndex = 90002
 	TitleLbl.Parent = Modal
 
 	local MsgLbl = Instance.new("TextLabel")
@@ -337,16 +426,17 @@ function Library:ConfirmModal(title, text, onConfirm, onCancel)
 	MsgLbl.Font = Theme.Font
 	MsgLbl.TextSize = 11
 	MsgLbl.TextColor3 = Theme.SubText
+	MsgLbl.RichText = true
 	MsgLbl.TextXAlignment = Enum.TextXAlignment.Left
 	MsgLbl.TextWrapped = true
-	MsgLbl.Text = text or "Are you sure?"
-	MsgLbl.ZIndex = 10002
+	MsgLbl.Text = parseMarkdown(text or "Are you sure?")
+	MsgLbl.ZIndex = 90002
 	MsgLbl.Parent = Modal
 
 	local BtnRow = Instance.new("Frame")
 	BtnRow.Size = UDim2.new(1, 0, 0, 22)
 	BtnRow.BackgroundTransparency = 1
-	BtnRow.ZIndex = 10002
+	BtnRow.ZIndex = 90002
 	BtnRow.Parent = Modal
 
 	local BtnLayout = Instance.new("UIListLayout")
@@ -362,7 +452,7 @@ function Library:ConfirmModal(title, text, onConfirm, onCancel)
 	YesBtn.Font = Theme.Font
 	YesBtn.TextSize = 11
 	YesBtn.TextColor3 = Theme.Text
-	YesBtn.ZIndex = 10003
+	YesBtn.ZIndex = 90003
 	YesBtn.Parent = BtnRow
 	stroke(YesBtn, Theme.Border)
 
@@ -374,7 +464,7 @@ function Library:ConfirmModal(title, text, onConfirm, onCancel)
 	NoBtn.Font = Theme.Font
 	NoBtn.TextSize = 11
 	NoBtn.TextColor3 = Theme.Text
-	NoBtn.ZIndex = 10003
+	NoBtn.ZIndex = 90003
 	NoBtn.Parent = BtnRow
 	stroke(NoBtn, Theme.Border)
 
@@ -389,7 +479,7 @@ function Library:ConfirmModal(title, text, onConfirm, onCancel)
 	end)
 end
 
--- Global Tooltip Manager
+-- Tooltip Manager
 local TooltipFrame = Instance.new("TextLabel")
 TooltipFrame.Name = "ImGuiTooltip"
 TooltipFrame.Size = UDim2.new(0, 0, 0, 18)
@@ -399,8 +489,9 @@ TooltipFrame.BorderSizePixel = 0
 TooltipFrame.Font = Theme.Font
 TooltipFrame.TextSize = 11
 TooltipFrame.TextColor3 = Theme.Text
+TooltipFrame.RichText = true
 TooltipFrame.Visible = false
-TooltipFrame.ZIndex = 9999
+TooltipFrame.ZIndex = 99999
 TooltipFrame.Parent = getScreenGui()
 stroke(TooltipFrame, Theme.Border)
 
@@ -427,7 +518,7 @@ local function bindTooltip(target, text)
 	end
 
 	inst.MouseEnter:Connect(function()
-		TooltipFrame.Text = text
+		TooltipFrame.Text = parseMarkdown(text)
 		TooltipFrame.Position = UDim2.new(0, UIS:GetMouseLocation().X + 12, 0, UIS:GetMouseLocation().Y + 12)
 		TooltipFrame.Visible = true
 	end)
@@ -435,14 +526,6 @@ local function bindTooltip(target, text)
 		TooltipFrame.Visible = false
 	end)
 end
-
--- Overlay Layer & Popups
-local OverlayLayer = Instance.new("Frame")
-OverlayLayer.Name = "OverlayLayer"
-OverlayLayer.Size = UDim2.new(1, 0, 1, 0)
-OverlayLayer.BackgroundTransparency = 1
-OverlayLayer.ZIndex = 5000
-OverlayLayer.Parent = getScreenGui()
 
 local ActivePopup = nil
 
@@ -456,7 +539,36 @@ local function closeActivePopup()
 	end
 end
 
--- Sürükleme (Drag) Sistemi
+-- Window Snapping & Dragging
+local SNAP_THRESHOLD = 12
+
+local function getSnappedPosition(target, targetPos, targetSize)
+	local screenSize = OverlayLayer.AbsoluteSize
+	local x, y = targetPos.X.Offset, targetPos.Y.Offset
+	local w, h = targetSize.X.Offset, targetSize.Y.Offset
+
+	if math.abs(x) < SNAP_THRESHOLD then x = 0 end
+	if math.abs(y) < SNAP_THRESHOLD then y = 0 end
+	if math.abs((x + w) - screenSize.X) < SNAP_THRESHOLD then x = screenSize.X - w end
+	if math.abs((y + h) - screenSize.Y) < SNAP_THRESHOLD then y = screenSize.Y - h end
+
+	for _, win in ipairs(Library.Windows) do
+		if win.Main and win.Main ~= target and win.Main.Visible then
+			local oPos = win.Main.Position
+			local oSize = win.Main.Size
+			local ox, oy = oPos.X.Offset, oPos.Y.Offset
+			local ow, oh = oSize.X.Offset, oSize.Y.Offset
+
+			if math.abs((x + w) - ox) < SNAP_THRESHOLD then x = ox - w end
+			if math.abs(x - (ox + ow)) < SNAP_THRESHOLD then x = ox + ow end
+			if math.abs((y + h) - oy) < SNAP_THRESHOLD then y = oy - h end
+			if math.abs(y - (oy + oh)) < SNAP_THRESHOLD then y = oy + oh end
+		end
+	end
+
+	return UDim2.new(0, x, 0, y)
+end
+
 local function makeDraggable(handles, target)
 	if type(handles) ~= "table" then handles = {handles} end
 	local dragging = false
@@ -480,7 +592,8 @@ local function makeDraggable(handles, target)
 			moveConn = UIS.InputChanged:Connect(function(moveInput)
 				if dragging and (moveInput.UserInputType == Enum.UserInputType.MouseMovement or moveInput.UserInputType == Enum.UserInputType.Touch) then
 					local delta = moveInput.Position - dragStart
-					target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+					local rawPos = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+					target.Position = getSnappedPosition(target, rawPos, target.Size)
 				end
 			end)
 
@@ -499,6 +612,7 @@ end
 
 local function openOverlayPanel(anchor, height, buildFn, onClose, overrideWidth)
 	closeActivePopup()
+	updateOverlayZIndex()
 
 	local catcher = Instance.new("TextButton")
 	catcher.Size = UDim2.new(1, 0, 1, 0)
@@ -536,7 +650,7 @@ local function openOverlayPanel(anchor, height, buildFn, onClose, overrideWidth)
 		closeActivePopup()
 	end)
 
-	buildFn(panel)
+	pcall(buildFn, panel)
 
 	ActivePopup = { catcher = catcher, panel = panel, onClose = onClose }
 end
@@ -551,6 +665,7 @@ local function attachContextMenu(inst, itemsFn)
 		if not items or #items == 0 then return end
 
 		closeActivePopup()
+		updateOverlayZIndex()
 
 		local mousePos = UIS:GetMouseLocation()
 		local screenSize = OverlayLayer.AbsoluteSize
@@ -591,10 +706,11 @@ local function attachContextMenu(inst, itemsFn)
 			Btn.Size = UDim2.new(1, 0, 0, 18)
 			Btn.BackgroundColor3 = Theme.Element
 			Btn.BorderSizePixel = 0
-			Btn.Text = item.Text
+			Btn.Text = parseMarkdown(item.Text)
 			Btn.Font = Theme.Font
 			Btn.TextSize = 11
 			Btn.TextColor3 = Theme.Text
+			Btn.RichText = true
 			Btn.TextXAlignment = Enum.TextXAlignment.Left
 			Btn.ZIndex = OverlayLayer.ZIndex + 2
 			Btn.Parent = panel
@@ -633,6 +749,7 @@ local function attachContextMenu(inst, itemsFn)
 	end)
 end
 
+-- Config File Handlers
 local function hasFileApi()
 	return writefile and readfile and isfile and isfolder and makefolder
 end
@@ -645,7 +762,8 @@ end
 
 local function registerFlag(flag, getSet)
 	if not flag then return end
-	Library.Flags[Library:GetID(flag)] = getSet
+	local resolvedID = Library:GetID(flag)
+	Library.Flags[resolvedID] = getSet
 end
 
 local function pushAutoSave()
@@ -654,14 +772,26 @@ local function pushAutoSave()
 	end
 end
 
+-- Keybind'ları benzersiz ID ile kaydeden Save/Load
 function Library:SaveConfig(name)
 	if not hasFileApi() then return false end
 	ensureFolder()
-	local data = {}
+	local data = {
+		Flags = {},
+		Keybinds = {}
+	}
 	for flag, obj in pairs(Library.Flags) do
-		data[flag] = obj.Get()
+		data.Flags[flag] = obj.Get()
+	end
+	for _, kb in ipairs(Library.RegisteredKeybinds) do
+		local k = kb.GetKey()
+		if k then
+			data.Keybinds[kb.ID] = k.Name
+		end
 	end
 	writefile(Library.ConfigFolder .. "/" .. name .. ".json", HttpService:JSONEncode(data))
+	Library.CurrentConfig = name
+	Library:NotifyConfigChanged()
 	Library:Notify("Config Saved", name .. ".json kaydedildi.", 3, "success")
 	return true
 end
@@ -674,12 +804,28 @@ function Library:LoadConfig(name)
 		return HttpService:JSONDecode(readfile(path))
 	end)
 	if not ok then return false end
-	for flag, value in pairs(data) do
+
+	local flagsData = data.Flags or data
+	local keybindsData = data.Keybinds or {}
+
+	for flag, value in pairs(flagsData) do
 		if Library.Flags[flag] then
 			Library.Flags[flag].Set(value)
 		end
 	end
+
+	for _, kb in ipairs(Library.RegisteredKeybinds) do
+		local savedKey = keybindsData[kb.ID] or keybindsData[kb.Name]
+		if savedKey then
+			local kc = Enum.KeyCode[savedKey]
+			if kc then
+				kb.SetKey(kc)
+			end
+		end
+	end
+
 	Library.CurrentConfig = name
+	Library:NotifyConfigChanged()
 	Library:Notify("Config Loaded", name .. ".json yüklendi.", 3, "info")
 	return true
 end
@@ -715,8 +861,6 @@ track(UIS.InputEnded:Connect(function(input)
 	end
 end))
 
-local KeybindToggles = {}
-
 track(UIS.InputBegan:Connect(function(input, gpe)
 	if gpe then return end
 	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
@@ -727,7 +871,6 @@ track(UIS.InputBegan:Connect(function(input, gpe)
 	end
 end))
 
--- Helper: Add Dependency API & Dynamic Element Deletion API
 local function attachDependencyAPI(holder, api, flag)
 	api.Instance = holder
 	api.Holder = holder
@@ -760,8 +903,12 @@ local function attachDependencyAPI(holder, api, flag)
 	end
 
 	function api.Destroy()
-		if flag and Library.Flags[flag] then
-			Library.Flags[flag] = nil
+		local resolvedID = Library:GetID(flag)
+		if resolvedID and Library.Flags[resolvedID] then
+			Library.Flags[resolvedID] = nil
+		end
+		if api._RegisteredKeybindEntry then
+			Library:UnregisterKeybind(api._RegisteredKeybindEntry)
 		end
 		if holder and typeof(holder) == "Instance" then
 			holder:Destroy()
@@ -780,12 +927,17 @@ local function buildLabel(container, text)
 	local Label = Instance.new("TextLabel")
 	Label.Size = UDim2.new(1, 0, 0, 18)
 	Label.BackgroundTransparency = 1
-	Label.Text = text
+	Label.Text = parseMarkdown(text)
 	Label.Font = Theme.Font
 	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.SubText
+	Label.RichText = true
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.Parent = container
+
+	Library:RegisterThemeElement(Label, "Font", "Font")
+	Library:RegisterThemeElement(Label, "TextSize", "TextSize")
+	Library:RegisterThemeElement(Label, "TextColor3", "SubText")
 
 	local api = attachDependencyAPI(Label, {})
 	return Label, api
@@ -803,11 +955,15 @@ local function buildMarkdown(container, text)
 	Label.TextColor3 = Theme.Text
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.TextYAlignment = Enum.TextYAlignment.Top
-	Label.Text = markdownToRichText(text)
+	Label.Text = parseMarkdown(text)
 	Label.Parent = container
 
+	Library:RegisterThemeElement(Label, "Font", "Font")
+	Library:RegisterThemeElement(Label, "TextSize", "TextSize")
+	Library:RegisterThemeElement(Label, "TextColor3", "Text")
+
 	local api = attachDependencyAPI(Label, {
-		SetText = function(newText) Label.Text = markdownToRichText(newText) end
+		SetText = function(newText) Label.Text = parseMarkdown(newText) end
 	})
 	return Label, api
 end
@@ -840,8 +996,9 @@ local function buildSeparator(container, text)
 		Label.Font = Theme.Font
 		Label.TextSize = Theme.TextSize
 		Label.TextColor3 = Theme.SubText
+		Label.RichText = true
 		Label.TextXAlignment = Enum.TextXAlignment.Left
-		Label.Text = text
+		Label.Text = parseMarkdown(text)
 		Label.Parent = Row
 
 		Line.Size = UDim2.new(0, 24, 0, 1)
@@ -853,17 +1010,28 @@ local function buildSeparator(container, text)
 	return attachDependencyAPI(Row, {})
 end
 
-local function buildButton(container, text, callback)
+local function buildButton(container, text, callback, flag, bindEnabled)
+	if bindEnabled == nil then bindEnabled = true end
+	local bindKey = nil
+	local listeningBind = false
+	local bindConn = nil
+
 	local Btn = Instance.new("TextButton")
 	Btn.Size = UDim2.new(1, 0, 0, 22)
 	Btn.BackgroundColor3 = Theme.Element
 	Btn.BorderSizePixel = 0
-	Btn.Text = text
+	Btn.Text = parseMarkdown(text)
 	Btn.Font = Theme.Font
 	Btn.TextSize = Theme.TextSize
 	Btn.TextColor3 = Theme.Text
+	Btn.RichText = true
 	Btn.Parent = container
 	stroke(Btn, Theme.Border)
+
+	Library:RegisterThemeElement(Btn, "BackgroundColor3", "Element")
+	Library:RegisterThemeElement(Btn, "Font", "Font")
+	Library:RegisterThemeElement(Btn, "TextSize", "TextSize")
+	Library:RegisterThemeElement(Btn, "TextColor3", "Text")
 
 	Btn.MouseEnter:Connect(function() Btn.BackgroundColor3 = Theme.ElementHover end)
 	Btn.MouseLeave:Connect(function() Btn.BackgroundColor3 = Theme.Element end)
@@ -874,7 +1042,91 @@ local function buildButton(container, text, callback)
 		safeCall(callback)
 	end)
 
-	local api = attachDependencyAPI(Btn, {})
+	local keybindEntry = { Key = nil, Toggle = function() safeCall(callback) end }
+	table.insert(KeybindToggles, keybindEntry)
+
+	local function setBindKey(k)
+		bindKey = k
+		keybindEntry.Key = k
+		Library:NotifyKeybindsChanged()
+	end
+
+	local keybindEntry2 = Library:RegisterKeybind(
+		"Button: " .. text,
+		function() return bindKey end,
+		function(k) setBindKey(k) end,
+		flag and ("Button:" .. Library:GetID(flag)) or nil
+	)
+	keybindEntry2._ToggleEntry = keybindEntry
+
+	attachContextMenu(Btn, function()
+		local items = {}
+		if bindEnabled then
+			table.insert(items, {
+				Text = "Bind Key: " .. (bindKey and bindKey.Name or "None"),
+				PreventClose = true,
+				OnClose = function()
+					if bindConn then bindConn:Disconnect(); bindConn = nil end
+					listeningBind = false
+				end,
+				Callback = function(btn)
+					if listeningBind then return end
+					listeningBind = true
+					if btn then
+						btn.Text = "Bind Key: Tuşa basın..."
+						btn.BackgroundColor3 = Theme.Accent
+					end
+
+					if bindConn then bindConn:Disconnect() end
+					bindConn = UIS.InputBegan:Connect(function(bindInput)
+						if bindInput.UserInputType == Enum.UserInputType.Keyboard then
+							if bindInput.KeyCode == Enum.KeyCode.Escape then
+								listeningBind = false
+								if btn and btn.Parent then
+									btn.Text = "Bind Key: " .. (bindKey and bindKey.Name or "None")
+									btn.BackgroundColor3 = Theme.Element
+								end
+								if bindConn then bindConn:Disconnect(); bindConn = nil end
+								task.delay(0.1, closeActivePopup)
+								return
+							end
+
+							setBindKey(bindInput.KeyCode)
+							listeningBind = false
+							if btn and btn.Parent then
+								btn.Text = "Bind Key: " .. bindInput.KeyCode.Name
+								btn.BackgroundColor3 = Theme.Element
+							end
+							if bindConn then bindConn:Disconnect(); bindConn = nil end
+							task.delay(0.2, closeActivePopup)
+						elseif bindInput.UserInputType == Enum.UserInputType.MouseButton1 then
+							listeningBind = false
+							if btn and btn.Parent then
+								btn.Text = "Bind Key: " .. (bindKey and bindKey.Name or "None")
+								btn.BackgroundColor3 = Theme.Element
+							end
+							if bindConn then bindConn:Disconnect(); bindConn = nil end
+						end
+					end)
+				end
+			})
+			if bindKey then
+				table.insert(items, {Text = "Unbind Key", Callback = function() setBindKey(nil) end})
+			end
+		end
+		return items
+	end)
+
+	registerFlag(flag, {
+		Get = function() return bindKey end,
+		Set = function(k) setBindKey(k) end
+	})
+
+	local api = attachDependencyAPI(Btn, {
+		SetBindKey = function(k) setBindKey(k) end,
+		GetBindKey = function() return bindKey end
+	}, flag)
+	api._RegisteredKeybindEntry = keybindEntry2
 	return Btn, api
 end
 
@@ -907,13 +1159,25 @@ local function buildCheckbox(container, text, default, callback, flag, bindEnabl
 	Label.Size = UDim2.new(1, -20, 1, 0)
 	Label.Position = UDim2.new(0, 20, 0, 0)
 	Label.BackgroundTransparency = 1
-	Label.Text = text
+	Label.Text = parseMarkdown(text)
 	Label.Font = Theme.Font
 	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.Text
+	Label.RichText = true
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.Active = false
 	Label.Parent = Holder
+
+	Library:RegisterThemeElement(Label, "Font", "Font")
+	Library:RegisterThemeElement(Label, "TextSize", "TextSize")
+	Library:RegisterThemeElement(Label, "TextColor3", "Text")
+
+	local listener = function()
+		if Box and Box.Parent then
+			Box.BackgroundColor3 = state and Theme.Accent or Theme.Element
+		end
+	end
+	table.insert(Library.ThemeChangedCallbacks, listener)
 
 	local function setState(v, fromUser)
 		state = v
@@ -933,9 +1197,16 @@ local function buildCheckbox(container, text, default, callback, flag, bindEnabl
 	local function setBindKey(k)
 		bindKey = k
 		keybindEntry.Key = k
+		Library:NotifyKeybindsChanged()
 	end
 
-	Library:RegisterKeybind("Toggle: " .. text, function() return bindKey end, function(k) setBindKey(k) end)
+	local keybindEntry2 = Library:RegisterKeybind(
+		"Toggle: " .. text,
+		function() return bindKey end,
+		function(k) setBindKey(k) end,
+		flag and ("Toggle:" .. Library:GetID(flag)) or nil
+	)
+	keybindEntry2._ToggleEntry = keybindEntry
 
 	attachContextMenu(Holder, function()
 		local items = {{Text = "Reset to Default", Callback = function() setState(defaultVal, true) end}}
@@ -1006,6 +1277,8 @@ local function buildCheckbox(container, text, default, callback, flag, bindEnabl
 		GetBindKey = function() return bindKey end
 	}, flag)
 
+	api._RegisteredKeybindEntry = keybindEntry2
+
 	return Holder, api
 end
 
@@ -1046,6 +1319,7 @@ local function buildSlider(container, text, min, max, default, callback, flag, d
 	Track.Active = true
 	Track.Parent = Holder
 	stroke(Track, Theme.Border)
+	Library:RegisterThemeElement(Track, "BackgroundColor3", "Element")
 
 	local grabWidth = Theme.GrabberWidth or 10
 	local rel = (value - min) / math.max(1e-9, max - min)
@@ -1056,6 +1330,7 @@ local function buildSlider(container, text, min, max, default, callback, flag, d
 	Fill.BackgroundTransparency = 0.5
 	Fill.BorderSizePixel = 0
 	Fill.Parent = Track
+	Library:RegisterThemeElement(Fill, "BackgroundColor3", "Accent")
 
 	local Grabber = Instance.new("Frame")
 	Grabber.Size = UDim2.new(0, grabWidth, 1, 0)
@@ -1065,18 +1340,23 @@ local function buildSlider(container, text, min, max, default, callback, flag, d
 	Grabber.ZIndex = 3
 	Grabber.Parent = Track
 	stroke(Grabber, Theme.Border)
+	Library:RegisterThemeElement(Grabber, "BackgroundColor3", "Grabber")
 
 	local ValueLabel = Instance.new("TextLabel")
 	ValueLabel.Size = UDim2.new(1, -8, 1, 0)
 	ValueLabel.Position = UDim2.new(0, 4, 0, 0)
 	ValueLabel.BackgroundTransparency = 1
-	ValueLabel.Text = text .. ": " .. fmt(value)
+	ValueLabel.Text = parseMarkdown(text .. ": " .. fmt(value))
 	ValueLabel.Font = Theme.Font
 	ValueLabel.TextSize = Theme.TextSize
 	ValueLabel.TextColor3 = Theme.Text
+	ValueLabel.RichText = true
 	ValueLabel.TextXAlignment = Enum.TextXAlignment.Left
 	ValueLabel.ZIndex = 4
 	ValueLabel.Parent = Track
+	Library:RegisterThemeElement(ValueLabel, "Font", "Font")
+	Library:RegisterThemeElement(ValueLabel, "TextSize", "TextSize")
+	Library:RegisterThemeElement(ValueLabel, "TextColor3", "Text")
 
 	local THROTTLE = 0.05
 	local lastFire = 0
@@ -1087,8 +1367,14 @@ local function buildSlider(container, text, min, max, default, callback, flag, d
 		Fill.Size = UDim2.new(r, 0, 1, 0)
 		Grabber.Size = UDim2.new(0, grabWidth, 1, 0)
 		Grabber.Position = UDim2.new(r, -r * grabWidth, 0, 0)
-		ValueLabel.Text = text .. ": " .. fmt(value)
+		ValueLabel.Text = parseMarkdown(text .. ": " .. fmt(value))
 	end
+
+	table.insert(Library.ThemeChangedCallbacks, function()
+		if Track and Track.Parent then
+			applyVisual()
+		end
+	end)
 
 	local function fireCallback()
 		lastFire = os.clock()
@@ -1108,7 +1394,6 @@ local function buildSlider(container, text, min, max, default, callback, flag, d
 		apply(min + (max - min) * r)
 	end
 
-	-- Ctrl + Click ile Elle Değer Girişi (Iconic ImGui)
 	Track.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			if UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.RightControl) then
@@ -1148,22 +1433,17 @@ local function buildSlider(container, text, min, max, default, callback, flag, d
 		end
 	end)
 
-	-- Scroll Bitişikte Ana Menü Scroll Çakışması Fix
 	if scrollable then
 		local hovering = false
 		local parentScroll = nil
 		Track.MouseEnter:Connect(function()
 			hovering = true
 			parentScroll = Track:FindFirstAncestorOfClass("ScrollingFrame")
-			if parentScroll then
-				parentScroll.ScrollingEnabled = false
-			end
+			if parentScroll then parentScroll.ScrollingEnabled = false end
 		end)
 		Track.MouseLeave:Connect(function()
 			hovering = false
-			if parentScroll then
-				parentScroll.ScrollingEnabled = true
-			end
+			if parentScroll then parentScroll.ScrollingEnabled = true end
 		end)
 		local step = decimals > 0 and (1 / mult) or 1
 		track(UIS.InputChanged:Connect(function(input)
@@ -1241,10 +1521,11 @@ local function buildRangeSlider(container, text, min, max, defaultLow, defaultHi
 	ValueLabel.Size = UDim2.new(1, -8, 1, 0)
 	ValueLabel.Position = UDim2.new(0, 4, 0, 0)
 	ValueLabel.BackgroundTransparency = 1
-	ValueLabel.Text = text .. ": [" .. tostring(valLow) .. " - " .. tostring(valHigh) .. "]"
+	ValueLabel.Text = parseMarkdown(text .. ": [" .. tostring(valLow) .. " - " .. tostring(valHigh) .. "]")
 	ValueLabel.Font = Theme.Font
 	ValueLabel.TextSize = Theme.TextSize
 	ValueLabel.TextColor3 = Theme.Text
+	ValueLabel.RichText = true
 	ValueLabel.TextXAlignment = Enum.TextXAlignment.Left
 	ValueLabel.ZIndex = 4
 	ValueLabel.Parent = Track
@@ -1259,7 +1540,7 @@ local function buildRangeSlider(container, text, min, max, defaultLow, defaultHi
 		GrabberHigh.Size = UDim2.new(0, grabWidth, 1, 0)
 		GrabberLow.Position = UDim2.new(rLow, -rLow * grabWidth, 0, 0)
 		GrabberHigh.Position = UDim2.new(rHigh, -rHigh * grabWidth, 0, 0)
-		ValueLabel.Text = text .. ": [" .. tostring(valLow) .. " - " .. tostring(valHigh) .. "]"
+		ValueLabel.Text = parseMarkdown(text .. ": [" .. tostring(valLow) .. " - " .. tostring(valHigh) .. "]")
 		safeCall(callback, valLow, valHigh)
 	end
 
@@ -1397,13 +1678,14 @@ local function buildKnob(container, text, values, defaultIndex, callback, flag, 
 	Label.Font = Theme.Font
 	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.Text
+	Label.RichText = true
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.Parent = Holder
 
 	local function apply()
 		index = math.clamp(index, 1, #values)
 		local currentVal = values[index]
-		Label.Text = text .. ": " .. tostring(currentVal)
+		Label.Text = parseMarkdown(text .. ": " .. tostring(currentVal))
 
 		local frac = (count > 1) and ((index - 1) / (count - 1)) or 0.5
 		local angleDeg = ANGLE_MIN + (frac * (ANGLE_MAX - ANGLE_MIN))
@@ -1479,6 +1761,12 @@ local function buildTextbox(container, text, default, placeholder, callback, fla
 	Box.Parent = Holder
 	stroke(Box, Theme.Border)
 
+	Library:RegisterThemeElement(Box, "BackgroundColor3", "Element")
+	Library:RegisterThemeElement(Box, "Font", "Font")
+	Library:RegisterThemeElement(Box, "TextSize", "TextSize")
+	Library:RegisterThemeElement(Box, "TextColor3", "Text")
+	Library:RegisterThemeElement(Box, "PlaceholderColor3", "SubText")
+
 	local Pad = Instance.new("UIPadding")
 	Pad.PaddingLeft = UDim.new(0, 6)
 	Pad.Parent = Box
@@ -1522,10 +1810,11 @@ local function buildNumberInput(container, text, min, max, default, step, callba
 	local Label = Instance.new("TextLabel")
 	Label.Size = UDim2.new(1, -72, 1, 0)
 	Label.BackgroundTransparency = 1
-	Label.Text = text
+	Label.Text = parseMarkdown(text)
 	Label.Font = Theme.Font
 	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.Text
+	Label.RichText = true
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.Parent = Holder
 
@@ -1635,6 +1924,7 @@ local function buildProgressBar(container, text, min, max, default, format)
 	Label.Font = Theme.Font
 	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.Text
+	Label.RichText = true
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.ZIndex = 2
 	Label.Parent = Track
@@ -1644,9 +1934,9 @@ local function buildProgressBar(container, text, min, max, default, format)
 		local r = (value - min) / math.max(1e-9, max - min)
 		Fill.Size = UDim2.new(r, 0, 1, 0)
 		if format then
-			Label.Text = text .. ": " .. formatValue(format, value)
+			Label.Text = parseMarkdown(text .. ": " .. formatValue(format, value))
 		else
-			Label.Text = text .. ": " .. tostring(value)
+			Label.Text = parseMarkdown(text .. ": " .. tostring(value))
 		end
 	end
 
@@ -1659,12 +1949,33 @@ local function buildProgressBar(container, text, min, max, default, format)
 	return api
 end
 
+local function colorFromConfig(v, fallback)
+	if typeof(v) == "Color3" then return v end
+	if type(v) == "table" then
+		local r, g, b = v.R, v.G, v.B
+		if r == nil then r, g, b = v[1], v[2], v[3] end
+		if type(r) == "number" and type(g) == "number" and type(b) == "number" then
+			if math.max(r, g, b) > 1 then
+				return Color3.fromRGB(
+					math.clamp(math.floor(r + 0.5), 0, 255),
+					math.clamp(math.floor(g + 0.5), 0, 255),
+					math.clamp(math.floor(b + 0.5), 0, 255)
+				)
+			end
+			return Color3.new(math.clamp(r, 0, 1), math.clamp(g, 0, 1), math.clamp(b, 0, 1))
+		end
+	end
+	return fallback
+end
+
 local function buildColorpicker(container, text, default, callback, flag, defaultAlpha)
-	local color = default or Color3.fromRGB(255, 255, 255)
+	local color = colorFromConfig(default, Color3.fromRGB(255, 255, 255))
 	local alpha = (defaultAlpha ~= nil) and defaultAlpha or 1
 	local defaultVal = color
 	local defaultAlphaVal = alpha
 	local isOpen = false
+
+	local h, s, v = color:ToHSV()
 
 	local Holder = Instance.new("Frame")
 	Holder.Size = UDim2.new(1, 0, 0, 22)
@@ -1675,10 +1986,11 @@ local function buildColorpicker(container, text, default, callback, flag, defaul
 	Btn.Size = UDim2.new(1, -26, 1, 0)
 	Btn.BackgroundColor3 = Theme.Element
 	Btn.BorderSizePixel = 0
-	Btn.Text = text
+	Btn.Text = parseMarkdown(text)
 	Btn.Font = Theme.Font
 	Btn.TextSize = Theme.TextSize
 	Btn.TextColor3 = Theme.Text
+	Btn.RichText = true
 	Btn.TextXAlignment = Enum.TextXAlignment.Left
 	Btn.Parent = Holder
 	stroke(Btn, Theme.Border)
@@ -1706,23 +2018,21 @@ local function buildColorpicker(container, text, default, callback, flag, defaul
 		return string.format("#%02X%02X%02X", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
 	end
 
-	local hexBoxRef = nil
-	local alphaLblRef = nil
-
 	local function setColor(c, a, fromUser)
+		c = colorFromConfig(c, color)
+		if typeof(c) ~= "Color3" then return end
 		color = c
 		alpha = math.clamp(a or alpha, 0, 1)
+		h, s, v = color:ToHSV()
 		Swatch.BackgroundColor3 = color
 		Swatch.BackgroundTransparency = 1 - alpha
-		if hexBoxRef then hexBoxRef.Text = toHex(color) end
-		if alphaLblRef then alphaLblRef.Text = "A: " .. math.floor(alpha * 255 + 0.5) end
 		safeCall(callback, color, alpha)
 		if fromUser then pushAutoSave() end
 	end
 
 	local function openPanel()
 		isOpen = true
-		openOverlayPanel(Holder, 122, function(panel)
+		openOverlayPanel(Holder, 130, function(panel)
 			local Pad2 = Instance.new("UIPadding")
 			Pad2.PaddingLeft = UDim.new(0, 6)
 			Pad2.PaddingRight = UDim.new(0, 6)
@@ -1730,86 +2040,86 @@ local function buildColorpicker(container, text, default, callback, flag, defaul
 			Pad2.PaddingBottom = UDim.new(0, 6)
 			Pad2.Parent = panel
 
-			local Layout = Instance.new("UIListLayout")
-			Layout.Padding = UDim.new(0, 4)
-			Layout.Parent = panel
+			local SVBox = Instance.new("Frame")
+			SVBox.Size = UDim2.new(0, 100, 0, 100)
+			SVBox.Position = UDim2.new(0, 0, 0, 0)
+			SVBox.BackgroundColor3 = Color3.fromHSV(h, 1, 1)
+			SVBox.BorderSizePixel = 0
+			SVBox.Parent = panel
+			stroke(SVBox, Theme.Border)
 
-			local r, g, b = math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255)
+			local WhiteGrad = Instance.new("Frame")
+			WhiteGrad.Size = UDim2.new(1, 0, 1, 0)
+			WhiteGrad.BorderSizePixel = 0
+			WhiteGrad.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			WhiteGrad.Parent = SVBox
+			local UIGrad1 = Instance.new("UIGradient")
+			UIGrad1.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1)})
+			UIGrad1.Parent = WhiteGrad
 
-			local function makeChannelSlider(label, initial, onChange, isAlpha)
-				local Row = Instance.new("Frame")
-				Row.Size = UDim2.new(1, 0, 0, 18)
-				Row.BackgroundTransparency = 1
-				Row.Parent = panel
+			local BlackGrad = Instance.new("Frame")
+			BlackGrad.Size = UDim2.new(1, 0, 1, 0)
+			BlackGrad.BorderSizePixel = 0
+			BlackGrad.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+			BlackGrad.Parent = SVBox
+			local UIGrad2 = Instance.new("UIGradient")
+			UIGrad2.Rotation = 90
+			UIGrad2.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0)})
+			UIGrad2.Parent = BlackGrad
 
-				local CTrack = Instance.new("Frame")
-				CTrack.Size = UDim2.new(1, 0, 1, 0)
-				CTrack.BackgroundColor3 = Theme.Element
-				CTrack.BorderSizePixel = 0
-				CTrack.Active = true
-				CTrack.Parent = Row
-				stroke(CTrack, Theme.Border)
+			local Cursor = Instance.new("Frame")
+			Cursor.Size = UDim2.new(0, 6, 0, 6)
+			Cursor.AnchorPoint = Vector2.new(0.5, 0.5)
+			Cursor.Position = UDim2.new(s, 0, 1 - v, 0)
+			Cursor.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			Cursor.BorderSizePixel = 0
+			Cursor.ZIndex = 5
+			Cursor.Parent = SVBox
+			stroke(Cursor, Color3.fromRGB(0, 0, 0))
 
-				local CFill = Instance.new("Frame")
-				CFill.Size = UDim2.new(initial / 255, 0, 1, 0)
-				CFill.BackgroundColor3 = Theme.Accent
-				CFill.BackgroundTransparency = 0.5
-				CFill.BorderSizePixel = 0
-				CFill.Parent = CTrack
+			local HueBar = Instance.new("Frame")
+			HueBar.Size = UDim2.new(0, 14, 0, 100)
+			HueBar.Position = UDim2.new(0, 106, 0, 0)
+			HueBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			HueBar.BorderSizePixel = 0
+			HueBar.Parent = panel
+			stroke(HueBar, Theme.Border)
 
-				local CLbl = Instance.new("TextLabel")
-				CLbl.Size = UDim2.new(1, -6, 1, 0)
-				CLbl.Position = UDim2.new(0, 3, 0, 0)
-				CLbl.BackgroundTransparency = 1
-				CLbl.Font = Theme.Font
-				CLbl.TextSize = 11
-				CLbl.TextColor3 = Theme.Text
-				CLbl.TextXAlignment = Enum.TextXAlignment.Left
-				CLbl.Text = label .. ": " .. initial
-				CLbl.ZIndex = 2
-				CLbl.Parent = CTrack
+			local HueGrad = Instance.new("UIGradient")
+			HueGrad.Rotation = 90
+			HueGrad.Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, Color3.fromHSV(0, 1, 1)),
+				ColorSequenceKeypoint.new(0.167, Color3.fromHSV(0.167, 1, 1)),
+				ColorSequenceKeypoint.new(0.333, Color3.fromHSV(0.333, 1, 1)),
+				ColorSequenceKeypoint.new(0.5, Color3.fromHSV(0.5, 1, 1)),
+				ColorSequenceKeypoint.new(0.667, Color3.fromHSV(0.667, 1, 1)),
+				ColorSequenceKeypoint.new(0.833, Color3.fromHSV(0.833, 1, 1)),
+				ColorSequenceKeypoint.new(1, Color3.fromHSV(1, 1, 1))
+			})
+			HueGrad.Parent = HueBar
 
-				if isAlpha then alphaLblRef = CLbl end
+			local HueCursor = Instance.new("Frame")
+			HueCursor.Size = UDim2.new(1, 2, 0, 3)
+			HueCursor.AnchorPoint = Vector2.new(0.5, 0.5)
+			HueCursor.Position = UDim2.new(0.5, 0, h, 0)
+			HueCursor.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			HueCursor.BorderSizePixel = 0
+			HueCursor.ZIndex = 5
+			HueCursor.Parent = HueBar
+			stroke(HueCursor, Color3.fromRGB(0, 0, 0))
 
-				local function setFromX(x)
-					local rel = math.clamp((x - CTrack.AbsolutePosition.X) / CTrack.AbsoluteSize.X, 0, 1)
-					local v = math.floor(rel * 255)
-					CFill.Size = UDim2.new(rel, 0, 1, 0)
-					CLbl.Text = label .. ": " .. v
-					onChange(v)
-				end
+			local SideFrame = Instance.new("Frame")
+			SideFrame.Size = UDim2.new(1, -128, 0, 100)
+			SideFrame.Position = UDim2.new(0, 128, 0, 0)
+			SideFrame.BackgroundTransparency = 1
+			SideFrame.Parent = panel
 
-				CTrack.InputBegan:Connect(function(input)
-					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-						setFromX(input.Position.X)
-						ActiveSlider = { Update = setFromX, Release = pushAutoSave }
-					end
-				end)
-			end
-
-			makeChannelSlider("R", r, function(v)
-				r = v
-				setColor(Color3.fromRGB(r, g, b), alpha, true)
-			end)
-			makeChannelSlider("G", g, function(v)
-				g = v
-				setColor(Color3.fromRGB(r, g, b), alpha, true)
-			end)
-			makeChannelSlider("B", b, function(v)
-				b = v
-				setColor(Color3.fromRGB(r, g, b), alpha, true)
-			end)
-			makeChannelSlider("A", math.floor(alpha * 255), function(v)
-				setColor(color, v / 255, true)
-			end, true)
-
-			local HexRow = Instance.new("Frame")
-			HexRow.Size = UDim2.new(1, 0, 0, 18)
-			HexRow.BackgroundTransparency = 1
-			HexRow.Parent = panel
+			local SideLayout = Instance.new("UIListLayout")
+			SideLayout.Padding = UDim.new(0, 4)
+			SideLayout.Parent = SideFrame
 
 			local HexBox = Instance.new("TextBox")
-			HexBox.Size = UDim2.new(1, 0, 1, 0)
+			HexBox.Size = UDim2.new(1, 0, 0, 20)
 			HexBox.BackgroundColor3 = Theme.Element
 			HexBox.BorderSizePixel = 0
 			HexBox.Text = toHex(color)
@@ -1817,9 +2127,75 @@ local function buildColorpicker(container, text, default, callback, flag, defaul
 			HexBox.TextSize = 11
 			HexBox.TextColor3 = Theme.Text
 			HexBox.ClearTextOnFocus = false
-			HexBox.Parent = HexRow
+			HexBox.Parent = SideFrame
 			stroke(HexBox, Theme.Border)
-			hexBoxRef = HexBox
+
+			local AlphaTrack = Instance.new("Frame")
+			AlphaTrack.Size = UDim2.new(1, 0, 0, 16)
+			AlphaTrack.BackgroundColor3 = Theme.Element
+			AlphaTrack.BorderSizePixel = 0
+			AlphaTrack.Active = true
+			AlphaTrack.Parent = SideFrame
+			stroke(AlphaTrack, Theme.Border)
+
+			local AlphaFill = Instance.new("Frame")
+			AlphaFill.Size = UDim2.new(alpha, 0, 1, 0)
+			AlphaFill.BackgroundColor3 = Theme.Accent
+			AlphaFill.BorderSizePixel = 0
+			AlphaFill.Parent = AlphaTrack
+
+			local AlphaLbl = Instance.new("TextLabel")
+			AlphaLbl.Size = UDim2.new(1, 0, 1, 0)
+			AlphaLbl.BackgroundTransparency = 1
+			AlphaLbl.Font = Theme.Font
+			AlphaLbl.TextSize = 10
+			AlphaLbl.TextColor3 = Theme.Text
+			AlphaLbl.Text = "Alpha: " .. math.floor(alpha * 100) .. "%"
+			AlphaLbl.ZIndex = 3
+			AlphaLbl.Parent = AlphaTrack
+
+			local function updateFromSV(x, y)
+				s = math.clamp((x - SVBox.AbsolutePosition.X) / SVBox.AbsoluteSize.X, 0, 1)
+				v = 1 - math.clamp((y - SVBox.AbsolutePosition.Y) / SVBox.AbsoluteSize.Y, 0, 1)
+				Cursor.Position = UDim2.new(s, 0, 1 - v, 0)
+				setColor(Color3.fromHSV(h, s, v), alpha, true)
+				HexBox.Text = toHex(color)
+			end
+
+			local function updateFromHue(y)
+				h = math.clamp((y - HueBar.AbsolutePosition.Y) / HueBar.AbsoluteSize.Y, 0, 1)
+				HueCursor.Position = UDim2.new(0.5, 0, h, 0)
+				SVBox.BackgroundColor3 = Color3.fromHSV(h, 1, 1)
+				setColor(Color3.fromHSV(h, s, v), alpha, true)
+				HexBox.Text = toHex(color)
+			end
+
+			SVBox.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+					updateFromSV(input.Position.X, input.Position.Y)
+					ActiveSlider = { Update = function(x) updateFromSV(x, UIS:GetMouseLocation().Y) end, Release = pushAutoSave }
+				end
+			end)
+
+			HueBar.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+					updateFromHue(input.Position.Y)
+					ActiveSlider = { Update = function() updateFromHue(UIS:GetMouseLocation().Y) end, Release = pushAutoSave }
+				end
+			end)
+
+			AlphaTrack.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+					local function setAlphaFromX(x)
+						local rel = math.clamp((x - AlphaTrack.AbsolutePosition.X) / AlphaTrack.AbsoluteSize.X, 0, 1)
+						AlphaFill.Size = UDim2.new(rel, 0, 1, 0)
+						AlphaLbl.Text = "Alpha: " .. math.floor(rel * 100) .. "%"
+						setColor(color, rel, true)
+					end
+					setAlphaFromX(input.Position.X)
+					ActiveSlider = { Update = setAlphaFromX, Release = pushAutoSave }
+				end
+			end)
 
 			HexBox.FocusLost:Connect(function()
 				local hex = HexBox.Text:gsub("#", "")
@@ -1827,21 +2203,23 @@ local function buildColorpicker(container, text, default, callback, flag, defaul
 					local nr = tonumber(hex:sub(1, 2), 16)
 					local ng = tonumber(hex:sub(3, 4), 16)
 					local nb = tonumber(hex:sub(5, 6), 16)
-					r, g, b = nr, ng, nb
 					setColor(Color3.fromRGB(nr, ng, nb), alpha, true)
+					SVBox.BackgroundColor3 = Color3.fromHSV(h, 1, 1)
+					Cursor.Position = UDim2.new(s, 0, 1 - v, 0)
+					HueCursor.Position = UDim2.new(0.5, 0, h, 0)
 				else
 					HexBox.Text = toHex(color)
 				end
 			end)
-		end, closePanel, 180)
+		end, closePanel, 200)
 	end
 
-	Btn.MouseButton1Click:Connect(function()
+	local function togglePanel()
 		if isOpen then closeActivePopup() else openPanel() end
-	end)
-	Swatch.MouseButton1Click:Connect(function()
-		if isOpen then closeActivePopup() else openPanel() end
-	end)
+	end
+
+	Btn.MouseButton1Click:Connect(togglePanel)
+	Swatch.MouseButton1Click:Connect(togglePanel)
 
 	attachContextMenu(Btn, function()
 		return {{Text = "Reset to Default", Callback = function() setColor(defaultVal, defaultAlphaVal, true) end}}
@@ -1879,10 +2257,11 @@ local function buildColorpickerCompact(container, text, default, callback, flag,
 	local Label = Instance.new("TextLabel")
 	Label.Size = UDim2.new(0, 60, 1, 0)
 	Label.BackgroundTransparency = 1
-	Label.Text = text
+	Label.Text = parseMarkdown(text)
 	Label.Font = Theme.Font
 	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.Text
+	Label.RichText = true
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.Parent = Holder
 
@@ -1932,6 +2311,8 @@ local function buildColorpickerCompact(container, text, default, callback, flag,
 	end
 
 	local function setColor(c, a, fromUser)
+		c = colorFromConfig(c, color)
+		if typeof(c) ~= "Color3" then return end
 		color = c
 		alpha = math.clamp(a or alpha, 0, 1)
 		refreshVisual()
@@ -1990,10 +2371,11 @@ local function buildKeybind(container, text, default, callback, flag)
 	local Label = Instance.new("TextLabel")
 	Label.Size = UDim2.new(1, -70, 1, 0)
 	Label.BackgroundTransparency = 1
-	Label.Text = text
+	Label.Text = parseMarkdown(text)
 	Label.Font = Theme.Font
 	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.Text
+	Label.RichText = true
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.Parent = Holder
 
@@ -2015,10 +2397,16 @@ local function buildKeybind(container, text, default, callback, flag)
 		key = k
 		Btn.Text = key and key.Name or "None"
 		safeCall(callback, key)
+		Library:NotifyKeybindsChanged()
 		if fromUser then pushAutoSave() end
 	end
 
-	Library:RegisterKeybind("Keybind: " .. text, function() return key end, function(k) setKey(k, true) end)
+	local keybindEntry = Library:RegisterKeybind(
+		"Keybind: " .. text,
+		function() return key end,
+		function(k) setKey(k, true) end,
+		flag and ("Keybind:" .. Library:GetID(flag)) or nil
+	)
 
 	Btn.MouseButton1Click:Connect(function()
 		if listening then return end
@@ -2049,14 +2437,22 @@ local function buildKeybind(container, text, default, callback, flag)
 	end)
 
 	registerFlag(flag, {
-		Get = function() return key end,
-		Set = function(v) setKey(v, false) end
+		Get = function() return key and key.Name or nil end,
+		Set = function(v)
+			if v == nil then setKey(nil, false) return end
+			if typeof(v) == "EnumItem" then setKey(v, false) return end
+			local e = Enum.KeyCode[v]
+			if e then setKey(e, false) end
+		end
 	})
 
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) setKey(v, false) end,
 		Get = function() return key end
 	}, flag)
+
+	api._RegisteredKeybindEntry = keybindEntry
+
 	return api
 end
 
@@ -2112,10 +2508,11 @@ local function buildSearchableOptionList(panel, options, isSelectedFn, onPickFn,
 		OptBtn.Size = UDim2.new(1, 0, 0, 20)
 		OptBtn.BackgroundColor3 = isSelectedFn(opt) and Theme.Accent or Theme.Element
 		OptBtn.BorderSizePixel = 0
-		OptBtn.Text = tostring(opt)
+		OptBtn.Text = parseMarkdown(tostring(opt))
 		OptBtn.Font = Theme.Font
 		OptBtn.TextSize = Theme.TextSize
 		OptBtn.TextColor3 = Theme.Text
+		OptBtn.RichText = true
 		OptBtn.TextXAlignment = Enum.TextXAlignment.Left
 		OptBtn.Parent = ScrollFrame
 
@@ -2145,7 +2542,7 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	for _, v in ipairs(defaults or {}) do selected[v] = true end
 	local defaultSelected = {}
 	for k, v in pairs(selected) do defaultSelected[k] = v end
-	local currentOptions = options
+	local currentOptions = options or {}
 	local isOpen = false
 
 	local Holder = Instance.new("Frame")
@@ -2157,10 +2554,11 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	Btn.Size = UDim2.new(1, 0, 1, 0)
 	Btn.BackgroundColor3 = Theme.Element
 	Btn.BorderSizePixel = 0
-	Btn.Text = text .. ": ..."
+	Btn.Text = parseMarkdown(text .. ": ...")
 	Btn.Font = Theme.Font
 	Btn.TextSize = Theme.TextSize
 	Btn.TextColor3 = Theme.Text
+	Btn.RichText = true
 	Btn.TextXAlignment = Enum.TextXAlignment.Left
 	Btn.Parent = Holder
 	stroke(Btn, Theme.Border)
@@ -2174,7 +2572,7 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 		for _, opt in ipairs(currentOptions) do
 			if selected[opt] then table.insert(names, tostring(opt)) end
 		end
-		Btn.Text = text .. ": " .. (#names > 0 and table.concat(names, ", ") or "None")
+		Btn.Text = parseMarkdown(text .. ": " .. (#names > 0 and table.concat(names, ", ") or "None"))
 	end
 	refreshLabel()
 
@@ -2198,11 +2596,7 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	end
 
 	Btn.MouseButton1Click:Connect(function()
-		if isOpen then
-			closeActivePopup()
-		else
-			openPanel()
-		end
+		if isOpen then closeActivePopup() else openPanel() end
 	end)
 
 	attachContextMenu(Btn, function()
@@ -2218,16 +2612,16 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 	registerFlag(flag, {
 		Get = function() return selected end,
 		Set = function(v)
-			selected = v
+			selected = v or {}
 			refreshLabel()
 		end
 	})
 	if callback then safeCall(callback, selected) end
 
 	local api = attachDependencyAPI(Holder, {
-		Set = function(v) selected = v; refreshLabel() end,
+		Set = function(v) selected = v or {}; refreshLabel() end,
 		Refresh = function(newOptions)
-			currentOptions = newOptions
+			currentOptions = newOptions or {}
 			refreshLabel()
 		end,
 	}, flag)
@@ -2235,7 +2629,8 @@ local function buildMultiDropdown(container, text, options, defaults, callback, 
 end
 
 local function buildDropdown(container, text, options, default, callback, flag)
-	local selected = default or options[1]
+	options = options or {}
+	local selected = default or options[1] or "None"
 	local defaultVal = selected
 	local currentOptions = options
 	local isOpen = false
@@ -2249,10 +2644,11 @@ local function buildDropdown(container, text, options, default, callback, flag)
 	Btn.Size = UDim2.new(1, 0, 1, 0)
 	Btn.BackgroundColor3 = Theme.Element
 	Btn.BorderSizePixel = 0
-	Btn.Text = text .. ": " .. tostring(selected)
+	Btn.Text = parseMarkdown(text .. ": " .. tostring(selected))
 	Btn.Font = Theme.Font
 	Btn.TextSize = Theme.TextSize
 	Btn.TextColor3 = Theme.Text
+	Btn.RichText = true
 	Btn.TextXAlignment = Enum.TextXAlignment.Left
 	Btn.Parent = Holder
 	stroke(Btn, Theme.Border)
@@ -2263,7 +2659,7 @@ local function buildDropdown(container, text, options, default, callback, flag)
 
 	local function selectOption(opt, fromUser)
 		selected = opt
-		Btn.Text = text .. ": " .. tostring(selected)
+		Btn.Text = parseMarkdown(text .. ": " .. tostring(selected))
 		safeCall(callback, opt)
 		if fromUser then pushAutoSave() end
 	end
@@ -2285,11 +2681,7 @@ local function buildDropdown(container, text, options, default, callback, flag)
 	end
 
 	Btn.MouseButton1Click:Connect(function()
-		if isOpen then
-			closeActivePopup()
-		else
-			openPanel()
-		end
+		if isOpen then closeActivePopup() else openPanel() end
 	end)
 
 	attachContextMenu(Btn, function()
@@ -2299,14 +2691,169 @@ local function buildDropdown(container, text, options, default, callback, flag)
 	registerFlag(flag, {Get = function() return selected end, Set = function(v) selectOption(v, false) end})
 	if callback then safeCall(callback, selected) end
 
+	local function refreshOptions(newOptions)
+		currentOptions = newOptions or {}
+		local keep = false
+		for _, o in ipairs(currentOptions) do
+			if o == selected then keep = true break end
+		end
+		if not keep then
+			selectOption(currentOptions[1] or "None", false)
+		else
+			Btn.Text = parseMarkdown(text .. ": " .. tostring(selected))
+		end
+	end
+
 	local api = attachDependencyAPI(Holder, {
 		Set = function(v) selectOption(v, false) end,
 		Get = function() return selected end,
 		Refresh = function(newOptions)
-			currentOptions = newOptions
-			selectOption(newOptions[1], false)
+			refreshOptions(newOptions)
 		end
 	}, flag)
+	return api
+end
+
+local function buildPlotLines(container, text, values, minVal, maxVal, height, overlayText)
+	values = values or {}
+	height = height or 50
+
+	local Holder = Instance.new("Frame")
+	Holder.Size = UDim2.new(1, 0, 0, height + 18)
+	Holder.BackgroundTransparency = 1
+	Holder.Parent = container
+
+	local Label = Instance.new("TextLabel")
+	Label.Size = UDim2.new(1, 0, 0, 14)
+	Label.BackgroundTransparency = 1
+	Label.Text = parseMarkdown(text)
+	Label.Font = Theme.Font
+	Label.TextSize = Theme.TextSize
+	Label.TextColor3 = Theme.SubText
+	Label.RichText = true
+	Label.TextXAlignment = Enum.TextXAlignment.Left
+	Label.Parent = Holder
+	Library:RegisterThemeElement(Label, "Font", "Font")
+	Library:RegisterThemeElement(Label, "TextSize", "TextSize")
+	Library:RegisterThemeElement(Label, "TextColor3", "SubText")
+
+	local PlotBox = Instance.new("Frame")
+	PlotBox.Size = UDim2.new(1, 0, 0, height)
+	PlotBox.Position = UDim2.new(0, 0, 0, 16)
+	PlotBox.BackgroundColor3 = Theme.Element
+	PlotBox.BorderSizePixel = 0
+	PlotBox.ClipsDescendants = true
+	PlotBox.Parent = Holder
+	stroke(PlotBox, Theme.Border)
+	Library:RegisterThemeElement(PlotBox, "BackgroundColor3", "Element")
+
+	local Canvas = Instance.new("Frame")
+	Canvas.Size = UDim2.new(1, 0, 1, 0)
+	Canvas.BackgroundTransparency = 1
+	Canvas.Parent = PlotBox
+
+	local InfoLabel = Instance.new("TextLabel")
+	InfoLabel.Size = UDim2.new(1, -8, 0, 14)
+	InfoLabel.Position = UDim2.new(0, 4, 0, 2)
+	InfoLabel.BackgroundTransparency = 1
+	InfoLabel.Text = parseMarkdown(overlayText or "")
+	InfoLabel.Font = Theme.Font
+	InfoLabel.TextSize = 10
+	InfoLabel.TextColor3 = Theme.Text
+	InfoLabel.RichText = true
+	InfoLabel.TextXAlignment = Enum.TextXAlignment.Right
+	InfoLabel.ZIndex = 5
+	InfoLabel.Parent = PlotBox
+	Library:RegisterThemeElement(InfoLabel, "Font", "Font")
+	Library:RegisterThemeElement(InfoLabel, "TextColor3", "Text")
+
+	local linePool = {}
+
+	local function renderPlot()
+		for _, line in ipairs(linePool) do
+			line.Visible = false
+		end
+
+		if #values < 2 then return end
+
+		local currentMin = minVal
+		local currentMax = maxVal
+		if not currentMin or not currentMax then
+			local calcMin, calcMax = values[1], values[1]
+			for _, v in ipairs(values) do
+				if v < calcMin then calcMin = v end
+				if v > calcMax then calcMax = v end
+			end
+			if calcMin == calcMax then calcMax = calcMin + 1 end
+			currentMin = currentMin or calcMin
+			currentMax = currentMax or calcMax
+		end
+
+		local count = #values
+		local boxWidth = Canvas.AbsoluteSize.X
+		local boxHeight = Canvas.AbsoluteSize.Y
+		if boxWidth <= 0 or boxHeight <= 0 then return end
+
+		local range = math.max(1e-6, currentMax - currentMin)
+
+		for i = 1, count - 1 do
+			local v1 = math.clamp(values[i], currentMin, currentMax)
+			local v2 = math.clamp(values[i + 1], currentMin, currentMax)
+
+			local x1 = ((i - 1) / (count - 1)) * boxWidth
+			local x2 = (i / (count - 1)) * boxWidth
+
+			local padding = 2
+			local usableHeight = math.max(1, boxHeight - (padding * 2))
+			local y1 = (boxHeight - padding) - (((v1 - currentMin) / range) * usableHeight)
+			local y2 = (boxHeight - padding) - (((v2 - currentMin) / range) * usableHeight)
+
+			local dx = x2 - x1
+			local dy = y2 - y1
+			local length = math.sqrt(dx * dx + dy * dy)
+			local angle = math.deg(math.atan2(dy, dx))
+
+			local line = linePool[i]
+			if not line then
+				line = Instance.new("Frame")
+				line.BorderSizePixel = 0
+				line.Parent = Canvas
+				Library:RegisterThemeElement(line, "BackgroundColor3", "Grabber")
+				linePool[i] = line
+			end
+
+			line.Size = UDim2.new(0, length + 1.2, 0, 2)
+			line.Position = UDim2.new(0, x1 + (dx / 2), 0, y1 + (dy / 2))
+			line.AnchorPoint = Vector2.new(0.5, 0.5)
+			line.Rotation = angle
+			line.BackgroundColor3 = Theme.Grabber
+			line.Visible = true
+		end
+	end
+
+	Canvas:GetPropertyChangedSignal("AbsoluteSize"):Connect(renderPlot)
+	table.insert(Library.ThemeChangedCallbacks, renderPlot)
+
+	renderPlot()
+
+	local api = attachDependencyAPI(Holder, {
+		SetValues = function(newValues, newOverlay)
+			values = newValues or {}
+			if newOverlay ~= nil then InfoLabel.Text = parseMarkdown(newOverlay) end
+			renderPlot()
+		end,
+		PushValue = function(val, maxPoints, newOverlay)
+			table.insert(values, val)
+			maxPoints = maxPoints or 50
+			while #values > maxPoints do
+				table.remove(values, 1)
+			end
+			if newOverlay ~= nil then InfoLabel.Text = parseMarkdown(newOverlay) end
+			renderPlot()
+		end,
+		GetValues = function() return values end
+	})
+
 	return api
 end
 
@@ -2317,10 +2864,11 @@ local function buildSelectable(container, text, defaultSelected, callback)
 	Btn.Size = UDim2.new(1, 0, 0, 20)
 	Btn.BackgroundColor3 = state and Theme.Accent or Theme.Element
 	Btn.BorderSizePixel = 0
-	Btn.Text = text
+	Btn.Text = parseMarkdown(text)
 	Btn.Font = Theme.Font
 	Btn.TextSize = Theme.TextSize
 	Btn.TextColor3 = Theme.Text
+	Btn.RichText = true
 	Btn.TextXAlignment = Enum.TextXAlignment.Left
 	Btn.Parent = container
 
@@ -2385,10 +2933,11 @@ local function buildRadioButton(container, text, active, callback, group)
 	Label.Size = UDim2.new(1, -20, 1, 0)
 	Label.Position = UDim2.new(0, 20, 0, 0)
 	Label.BackgroundTransparency = 1
-	Label.Text = text
+	Label.Text = parseMarkdown(text)
 	Label.Font = Theme.Font
 	Label.TextSize = Theme.TextSize
 	Label.TextColor3 = Theme.Text
+	Label.RichText = true
 	Label.TextXAlignment = Enum.TextXAlignment.Left
 	Label.Active = false
 	Label.Parent = Holder
@@ -2456,6 +3005,7 @@ local function buildSplitterFrames(container, ratio, height)
 		Layout.SortOrder = Enum.SortOrder.LayoutOrder
 		Layout.Padding = UDim.new(0, Theme.ItemSpacing or 4)
 		Layout.Parent = pane
+		Library:RegisterThemeElement(Layout, "Padding", "ItemSpacing", function(v) return UDim.new(0, v or 4) end)
 	end
 	layoutPane(LeftPane)
 	layoutPane(RightPane)
@@ -2489,10 +3039,7 @@ local function buildSplitterFrames(container, ratio, height)
 	return LeftPane, RightPane
 end
 
--- ============================================================
 -- Section / Tree / Row / Group Builders
--- ============================================================
-
 local function buildSectionHeader(container, title, opts)
 	opts = opts or {}
 	local collapsed = opts.Collapsed or false
@@ -2541,8 +3088,9 @@ local function buildSectionHeader(container, title, opts)
 	TitleLbl.Font = Theme.Font
 	TitleLbl.TextSize = Theme.TextSize
 	TitleLbl.TextColor3 = Theme.Text
+	TitleLbl.RichText = true
 	TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
-	TitleLbl.Text = title
+	TitleLbl.Text = parseMarkdown(title)
 	TitleLbl.Active = false
 	TitleLbl.Parent = Header
 
@@ -2559,11 +3107,13 @@ local function buildSectionHeader(container, title, opts)
 	ContentPad.PaddingTop = UDim.new(0, 4)
 	ContentPad.PaddingBottom = UDim.new(0, 4)
 	ContentPad.Parent = Content
+	Library:RegisterThemeElement(ContentPad, "PaddingLeft", "IndentSpacing", function(v) return UDim.new(0, v or 12) end)
 
 	local ContentLayout = Instance.new("UIListLayout")
 	ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	ContentLayout.Padding = UDim.new(0, Theme.ItemSpacing or 4)
 	ContentLayout.Parent = Content
+	Library:RegisterThemeElement(ContentLayout, "Padding", "ItemSpacing", function(v) return UDim.new(0, v or 4) end)
 
 	Header.MouseButton1Click:Connect(function()
 		collapsed = not collapsed
@@ -2617,8 +3167,9 @@ local function buildTree(container, title)
 	TitleLbl.Font = Theme.Font
 	TitleLbl.TextSize = Theme.TextSize
 	TitleLbl.TextColor3 = Theme.Text
+	TitleLbl.RichText = true
 	TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
-	TitleLbl.Text = title
+	TitleLbl.Text = parseMarkdown(title)
 	TitleLbl.Active = false
 	TitleLbl.Parent = Header
 
@@ -2633,11 +3184,13 @@ local function buildTree(container, title)
 	local ContentPad = Instance.new("UIPadding")
 	ContentPad.PaddingLeft = UDim.new(0, Theme.IndentSpacing or 14)
 	ContentPad.Parent = Content
+	Library:RegisterThemeElement(ContentPad, "PaddingLeft", "IndentSpacing", function(v) return UDim.new(0, v or 14) end)
 
 	local ContentLayout = Instance.new("UIListLayout")
 	ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	ContentLayout.Padding = UDim.new(0, Theme.ItemSpacing or 4)
 	ContentLayout.Parent = Content
+	Library:RegisterThemeElement(ContentLayout, "Padding", "ItemSpacing", function(v) return UDim.new(0, v or 4) end)
 
 	Header.MouseButton1Click:Connect(function()
 		collapsed = not collapsed
@@ -2674,8 +3227,8 @@ local function buildRow(container, height, gap)
 		return api
 	end
 
-	function Row:AddButton(text, callback, widthScale)
-		local Btn, api = buildButton(RowFrame, text, callback)
+	function Row:AddButton(text, callback, widthScale, flag, bindEnabled)
+		local Btn, api = buildButton(RowFrame, text, callback, flag, bindEnabled)
 		flexify(Btn, widthScale)
 		return api
 	end
@@ -2695,9 +3248,17 @@ local function buildRow(container, height, gap)
 	return Row
 end
 
--- Scope Construction
+-- Scope Builder
 local function buildScope(container)
 	local Scope = {}
+
+	function Scope:PushID(id)
+		Library:PushID(id)
+	end
+
+	function Scope:PopID()
+		Library:PopID()
+	end
 
 	function Scope:Clear()
 		for _, child in ipairs(container:GetChildren()) do
@@ -2716,9 +3277,8 @@ local function buildScope(container)
 		return api
 	end
 	function Scope:AddSeparator(text) return buildSeparator(container, text) end
-	function Scope:AddButton(text, callback)
-		local _, api = buildButton(container, text, callback)
-		return api
+	function Scope:AddButton(text, callback, flag, bindEnabled)
+		return buildButton(container, text, callback, flag, bindEnabled)
 	end
 	function Scope:AddCheckbox(text, default, callback, flag, bindEnabled)
 		local _, api = buildCheckbox(container, text, default, callback, flag, bindEnabled)
@@ -2768,6 +3328,10 @@ local function buildScope(container)
 	function Scope:AddRadioButton(text, active, callback, group)
 		return buildRadioButton(container, text, active, callback, group)
 	end
+	function Scope:AddPlotLines(text, values, minVal, maxVal, height, overlayText)
+		return buildPlotLines(container, text, values, minVal, maxVal, height, overlayText)
+	end
+
 	function Scope:AddRow(height, gap)
 		return buildRow(container, height, gap)
 	end
@@ -2775,14 +3339,7 @@ local function buildScope(container)
 		local left, right = buildSplitterFrames(container, ratio, height)
 		return buildScope(left), buildScope(right)
 	end
-	function Scope:PushID(id)
-		Library:PushID(id)
-	end
-	function Scope:PopID()
-		Library:PopID()
-	end
 
-	-- Sub-Tabs Özelliği
 	function Scope:AddSubTabs(tabNames)
 		local SubTabsHolder = Instance.new("Frame")
 		SubTabsHolder.Size = UDim2.new(1, 0, 0, 0)
@@ -2830,10 +3387,11 @@ local function buildScope(container)
 			Btn.Size = UDim2.new(0, 60, 1, 0)
 			Btn.BackgroundColor3 = Theme.Element
 			Btn.BorderSizePixel = 0
-			Btn.Text = name
+			Btn.Text = parseMarkdown(name)
 			Btn.Font = Theme.Font
 			Btn.TextSize = 11
 			Btn.TextColor3 = Theme.SubText
+			Btn.RichText = true
 			Btn.Parent = HeaderBar
 			stroke(Btn, Theme.Border)
 			tabBtns[name] = Btn
@@ -2849,6 +3407,7 @@ local function buildScope(container)
 			PageLayout.SortOrder = Enum.SortOrder.LayoutOrder
 			PageLayout.Padding = UDim.new(0, Theme.ItemSpacing or 4)
 			PageLayout.Parent = Page
+			Library:RegisterThemeElement(PageLayout, "Padding", "ItemSpacing", function(v) return UDim.new(0, v or 4) end)
 
 			subPages[name] = Page
 			subScopes[name] = buildScope(Page)
@@ -2886,6 +3445,7 @@ local function buildScope(container)
 		GroupLayout.SortOrder = Enum.SortOrder.LayoutOrder
 		GroupLayout.Padding = UDim.new(0, Theme.ItemSpacing or 4)
 		GroupLayout.Parent = GroupFrame
+		Library:RegisterThemeElement(GroupLayout, "Padding", "ItemSpacing", function(v) return UDim.new(0, v or 4) end)
 
 		return buildScope(GroupFrame)
 	end
@@ -2954,6 +3514,15 @@ function Library:CreateWindow(title, pos, size, opts)
 	opts = opts or {}
 	local noMenuBar = opts.NoMenuBar or false
 
+	for i = #Library.Windows, 1, -1 do
+		local existing = Library.Windows[i]
+		if existing.Main and existing.Main.Name == title then
+			if existing.Destroy then
+				pcall(function() existing:Destroy() end)
+			end
+		end
+	end
+
 	local screenGui = getScreenGui()
 	local offset = #Library.Windows * 20
 
@@ -2968,16 +3537,25 @@ function Library:CreateWindow(title, pos, size, opts)
 	Main.BackgroundColor3 = Theme.Background
 	Main.BackgroundTransparency = Theme.BackgroundTransparency
 	Main.BorderSizePixel = 0
-	Main.ZIndex = Library:GetNextZIndex()
+	Main.ZIndex = Library.FocusedZIndex
 	Main.Parent = screenGui
 	stroke(Main, Theme.Border)
 	Window.Main = Main
 
+	Library:RegisterThemeElement(Main, "BackgroundColor3", "Background")
+
+	function Window:BringToFront()
+		Library.FocusedZIndex = Library.FocusedZIndex + 10
+		Main.ZIndex = Library.FocusedZIndex
+	end
+
 	Main.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			Library:BringToFront(Window)
+			Window:BringToFront()
 		end
 	end)
+
+	Window:BringToFront()
 
 	local TitleBar = Instance.new("Frame")
 	TitleBar.Name = "TitleBar"
@@ -2985,6 +3563,7 @@ function Library:CreateWindow(title, pos, size, opts)
 	TitleBar.BackgroundColor3 = Theme.Header
 	TitleBar.BorderSizePixel = 0
 	TitleBar.Parent = Main
+	Library:RegisterThemeElement(TitleBar, "BackgroundColor3", "Header")
 
 	local CollapseBtn = Instance.new("TextButton")
 	CollapseBtn.Size = UDim2.new(0, 18, 1, 0)
@@ -2995,6 +3574,8 @@ function Library:CreateWindow(title, pos, size, opts)
 	CollapseBtn.TextSize = 11
 	CollapseBtn.TextColor3 = Theme.Text
 	CollapseBtn.Parent = TitleBar
+	Library:RegisterThemeElement(CollapseBtn, "Font", "Font")
+	Library:RegisterThemeElement(CollapseBtn, "TextColor3", "Text")
 
 	local TitleLabel = Instance.new("TextLabel")
 	TitleLabel.BackgroundTransparency = 1
@@ -3003,9 +3584,12 @@ function Library:CreateWindow(title, pos, size, opts)
 	TitleLabel.Font = Theme.Font
 	TitleLabel.TextSize = 12
 	TitleLabel.TextColor3 = Theme.Text
+	TitleLabel.RichText = true
 	TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
-	TitleLabel.Text = title
+	TitleLabel.Text = parseMarkdown(title)
 	TitleLabel.Parent = TitleBar
+	Library:RegisterThemeElement(TitleLabel, "Font", "Font")
+	Library:RegisterThemeElement(TitleLabel, "TextColor3", "Text")
 
 	local MenuBar = Instance.new("Frame")
 	MenuBar.Name = "MenuBar"
@@ -3126,10 +3710,11 @@ function Library:CreateWindow(title, pos, size, opts)
 		local MenuBtn = Instance.new("TextButton")
 		MenuBtn.Size = UDim2.new(0, 50, 1, 0)
 		MenuBtn.BackgroundTransparency = 1
-		MenuBtn.Text = name
+		MenuBtn.Text = parseMarkdown(name)
 		MenuBtn.Font = Theme.Font
 		MenuBtn.TextSize = 11
 		MenuBtn.TextColor3 = Theme.Text
+		MenuBtn.RichText = true
 		MenuBtn.Parent = MenuBar
 
 		MenuBtn.MouseEnter:Connect(function() MenuBtn.TextColor3 = Theme.Grabber end)
@@ -3153,10 +3738,11 @@ function Library:CreateWindow(title, pos, size, opts)
 				OptBtn.Size = UDim2.new(1, 0, 0, 20)
 				OptBtn.BackgroundColor3 = Theme.Element
 				OptBtn.BorderSizePixel = 0
-				OptBtn.Text = text
+				OptBtn.Text = parseMarkdown(text)
 				OptBtn.Font = Theme.Font
 				OptBtn.TextSize = 11
 				OptBtn.TextColor3 = Theme.Text
+				OptBtn.RichText = true
 				OptBtn.TextXAlignment = Enum.TextXAlignment.Left
 				OptBtn.Parent = panel
 
@@ -3172,31 +3758,26 @@ function Library:CreateWindow(title, pos, size, opts)
 				end)
 			end
 
-			makeToolOpt("Config Settings", function()
-				if Library.ToolWindows.Config and Library.ToolWindows.Config.Main and Library.ToolWindows.Config.Main.Parent then
-					Library.ToolWindows.Config:Destroy()
-					Library.ToolWindows.Config = nil
+			local function toggleToolWindow(key, createFn)
+				local win = Library.ToolWindows[key]
+				if win and win.Main and win.Main.Parent then
+					win:Destroy()
+					Library.ToolWindows[key] = nil
 				else
-					Library.ToolWindows.Config = Library:CreateConfigWindow()
+					Library.ToolWindows[key] = createFn()
 				end
+			end
+
+			makeToolOpt("Config Settings", function()
+				toggleToolWindow("Config", function() return Library:CreateConfigWindow() end)
 			end)
 
 			makeToolOpt("Style Editor", function()
-				if Library.ToolWindows.Style and Library.ToolWindows.Style.Main and Library.ToolWindows.Style.Main.Parent then
-					Library.ToolWindows.Style:Destroy()
-					Library.ToolWindows.Style = nil
-				else
-					Library.ToolWindows.Style = Library:CreateStyleEditorWindow()
-				end
+				toggleToolWindow("Style", function() return Library:CreateStyleEditorWindow() end)
 			end)
 
 			makeToolOpt("Keybind List", function()
-				if Library.ToolWindows.Keybinds and Library.ToolWindows.Keybinds.Main and Library.ToolWindows.Keybinds.Main.Parent then
-					Library.ToolWindows.Keybinds:Destroy()
-					Library.ToolWindows.Keybinds = nil
-				else
-					Library.ToolWindows.Keybinds = Library:CreateKeybindListWindow()
-				end
+				toggleToolWindow("Keybinds", function() return Library:CreateKeybindListWindow() end)
 			end)
 		end, nil, 130)
 	end)
@@ -3206,10 +3787,11 @@ function Library:CreateWindow(title, pos, size, opts)
 		TabBtn.Size = UDim2.new(0, 70, 1, 0)
 		TabBtn.BackgroundColor3 = Theme.Element
 		TabBtn.BorderSizePixel = 0
-		TabBtn.Text = name
+		TabBtn.Text = parseMarkdown(name)
 		TabBtn.Font = Theme.Font
 		TabBtn.TextSize = 11
 		TabBtn.TextColor3 = Theme.SubText
+		TabBtn.RichText = true
 		TabBtn.Parent = Tabs
 		stroke(TabBtn, Theme.Border)
 
@@ -3234,6 +3816,7 @@ function Library:CreateWindow(title, pos, size, opts)
 		Layout.SortOrder = Enum.SortOrder.LayoutOrder
 		Layout.Padding = UDim.new(0, Theme.ItemSpacing or 4)
 		Layout.Parent = Page
+		Library:RegisterThemeElement(Layout, "Padding", "ItemSpacing", function(v) return UDim.new(0, v or 4) end)
 
 		local function select()
 			for _, c in ipairs(Window.Categories) do
@@ -3278,7 +3861,7 @@ function Library:CreateWindow(title, pos, size, opts)
 		Catcher.BackgroundTransparency = 0.4
 		Catcher.Text = ""
 		Catcher.AutoButtonColor = false
-		Catcher.ZIndex = 20000
+		Catcher.ZIndex = 80000
 		Catcher.Parent = getScreenGui()
 
 		local Panel = Instance.new("Frame")
@@ -3287,7 +3870,7 @@ function Library:CreateWindow(title, pos, size, opts)
 		Panel.AnchorPoint = Vector2.new(0.5, 0.5)
 		Panel.BackgroundColor3 = Theme.Background
 		Panel.BorderSizePixel = 0
-		Panel.ZIndex = 20001
+		Panel.ZIndex = 80001
 		Panel.Parent = Catcher
 		stroke(Panel, Theme.Border)
 
@@ -3313,7 +3896,7 @@ function Library:CreateWindow(title, pos, size, opts)
 		SearchBox.TextColor3 = Theme.Text
 		SearchBox.PlaceholderColor3 = Theme.SubText
 		SearchBox.ClearTextOnFocus = false
-		SearchBox.ZIndex = 20002
+		SearchBox.ZIndex = 80002
 		SearchBox.Parent = Panel
 		stroke(SearchBox, Theme.Border)
 
@@ -3325,7 +3908,7 @@ function Library:CreateWindow(title, pos, size, opts)
 		ResultsFrame.ScrollBarImageColor3 = Theme.Border
 		ResultsFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
 		ResultsFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-		ResultsFrame.ZIndex = 20002
+		ResultsFrame.ZIndex = 80002
 		ResultsFrame.Parent = Panel
 
 		local ResultsLayout = Instance.new("UIListLayout")
@@ -3376,12 +3959,13 @@ function Library:CreateWindow(title, pos, size, opts)
 					Btn.Size = UDim2.new(1, 0, 0, 20)
 					Btn.BackgroundColor3 = Theme.Element
 					Btn.BorderSizePixel = 0
-					Btn.Text = r.Text
+					Btn.Text = parseMarkdown(r.Text)
 					Btn.Font = Theme.Font
 					Btn.TextSize = 11
 					Btn.TextColor3 = Theme.Text
+					Btn.RichText = true
 					Btn.TextXAlignment = Enum.TextXAlignment.Left
-					Btn.ZIndex = 20003
+					Btn.ZIndex = 80003
 					Btn.Parent = ResultsFrame
 
 					local IPad = Instance.new("UIPadding")
@@ -3437,35 +4021,54 @@ local function populateConfigManager(scope)
 	scope:AddLabel("Konfigürasyon Yönetimi")
 	local nameBox = scope:AddTextbox("Config Adı", "", "Dosya adı gir...")
 
+	local autoLoadFile = Library.ConfigFolder .. "/autoload.txt"
+
+	local function readAutoLoad()
+		if hasFileApi() and isfile(autoLoadFile) then
+			local content = readfile(autoLoadFile)
+			if content and #content > 0 then return content end
+		end
+		return nil
+	end
+
 	local function getConfigList()
 		local list = Library:ListConfigs()
 		return #list > 0 and list or {"None"}
 	end
 
 	local configDropdown = scope:AddDropdown("Kayıtlı Configler", getConfigList(), nil, nil, nil)
+	local autoLoadLabel = scope:AddLabel("Auto Load: " .. (readAutoLoad() or "None"))
 
-	local autoLoadFile = Library.ConfigFolder .. "/autoload.txt"
-	local function getAutoLoadName()
-		if hasFileApi() and isfile(autoLoadFile) then
-			local content = readfile(autoLoadFile)
-			if content and #content > 0 then return content end
-		end
-		return "None"
+	local autosaveCheckbox = scope:AddCheckbox("Auto Save Enabled", Library.AutoSaveEnabled, function(v)
+		local name = configDropdown.Get()
+		Library:SetAutoSave(v, name ~= "None" and name or nil)
+	end)
+
+	local function syncAll()
+		local list = getConfigList()
+		configDropdown.Refresh(list)
+		autoLoadLabel.SetText("Auto Load: " .. (readAutoLoad() or "None"))
+		autosaveCheckbox.Set(Library.AutoSaveEnabled)
 	end
 
-	local autoLoadLabel = scope:AddLabel("Auto Load: " .. getAutoLoadName())
+	local listener = syncAll
+	table.insert(Library.ConfigChangedCallbacks, listener)
 
 	scope:AddButton("Save Config", function()
 		local name = nameBox.Get()
-		if name == "" then return end
+		if name == "" then name = configDropdown.Get() end
+		if name == "" or name == "None" then return end
 		Library:SaveConfig(name)
-		configDropdown.Refresh(getConfigList())
+		syncAll()
+		configDropdown.Set(name)
+		Library:Notify("Kaydedildi", "'" .. name .. "' kaydedildi.", 3, "success")
 	end)
 
 	scope:AddButton("Load Config", function()
 		local name = configDropdown.Get()
 		if name == "None" then return end
 		Library:LoadConfig(name)
+		syncAll()
 	end)
 
 	scope:AddButton("Delete Config", function()
@@ -3475,11 +4078,11 @@ local function populateConfigManager(scope)
 			local path = Library.ConfigFolder .. "/" .. name .. ".json"
 			if isfile(path) then
 				delfile(path)
-				if getAutoLoadName() == name then
+				if Library.CurrentConfig == name then Library.CurrentConfig = nil end
+				if readAutoLoad() == name then
 					delfile(autoLoadFile)
-					autoLoadLabel.Text = "Auto Load: None"
 				end
-				configDropdown.Refresh(getConfigList())
+				syncAll()
 				Library:Notify("Config Silindi", name .. " başarıyla silindi.", 3, "warning")
 			end
 		end)
@@ -3490,7 +4093,7 @@ local function populateConfigManager(scope)
 		if name == "None" or not hasFileApi() then return end
 		ensureFolder()
 		writefile(autoLoadFile, name)
-		autoLoadLabel.Text = "Auto Load: " .. name
+		syncAll()
 		Library:Notify("AutoLoad Ayarlandı", name .. " varsayılan olarak ayarlandı.", 3, "info")
 	end)
 
@@ -3498,27 +4101,33 @@ local function populateConfigManager(scope)
 		if hasFileApi() and isfile(autoLoadFile) then
 			delfile(autoLoadFile)
 		end
-		autoLoadLabel.Text = "Auto Load: None"
+		syncAll()
 		Library:Notify("AutoLoad Temizlendi", "Otomatik yükleme kaldırıldı.", 3, "info")
 	end)
 
-	scope:AddCheckbox("Auto Save Enabled", Library.AutoSaveEnabled, function(v)
-		local name = configDropdown.Get()
-		Library:SetAutoSave(v, name ~= "None" and name or nil)
+	scope:AddSeparator("Sistem")
+
+	scope:AddButton("Unload Library", function()
+		Library:Unload()
 	end)
 
-	if hasFileApi() and isfile(autoLoadFile) then
-		local autoName = readfile(autoLoadFile)
-		if autoName and autoName ~= "" and isfile(Library.ConfigFolder .. "/" .. autoName .. ".json") then
-			Library:LoadConfig(autoName)
-		end
+	local function cleanup()
+		removeCallback(Library.ConfigChangedCallbacks, listener)
+		if autosaveCheckbox then pcall(function() autosaveCheckbox:Destroy() end) end
 	end
+	return cleanup
 end
 
 function Library:CreateConfigWindow()
 	local ConfigWin = Library:CreateWindow("Config Manager", UDim2.new(0, 150, 0, 150), UDim2.new(0, 300, 0, 340))
 	local MainTab = ConfigWin:AddCategory("Configs")
-	populateConfigManager(MainTab)
+	local cleanup = populateConfigManager(MainTab)
+
+	local baseDestroy = ConfigWin.Destroy
+	ConfigWin.Destroy = function(self)
+		if cleanup then pcall(cleanup) end
+		baseDestroy(self)
+	end
 	return ConfigWin
 end
 
@@ -3530,17 +4139,29 @@ function Library:CreateStyleEditorWindow()
 
 	ColorsTab:AddColorpicker("Header Color", Theme.Header, function(color)
 		Theme.Header = color
-		for _, win in ipairs(Library.Windows) do
-			local titleBar = win.Main and win.Main:FindFirstChild("TitleBar")
-			if titleBar then titleBar.BackgroundColor3 = color end
-		end
+		Library:NotifyThemeChanged()
 	end)
 
-	ColorsTab:AddColorpicker("Background Color", Theme.Background, function(color) Theme.Background = color end)
-	ColorsTab:AddColorpicker("Accent Color", Theme.Accent, function(color) Theme.Accent = color end)
-	ColorsTab:AddColorpicker("Element Color", Theme.Element, function(color) Theme.Element = color end)
-	ColorsTab:AddColorpicker("Grabber Knob Color", Theme.Grabber, function(color) Theme.Grabber = color end)
-	ColorsTab:AddColorpicker("Text Color", Theme.Text, function(color) Theme.Text = color end)
+	ColorsTab:AddColorpicker("Background Color", Theme.Background, function(color)
+		Theme.Background = color
+		Library:NotifyThemeChanged()
+	end)
+	ColorsTab:AddColorpicker("Accent Color", Theme.Accent, function(color)
+		Theme.Accent = color
+		Library:NotifyThemeChanged()
+	end)
+	ColorsTab:AddColorpicker("Element Color", Theme.Element, function(color)
+		Theme.Element = color
+		Library:NotifyThemeChanged()
+	end)
+	ColorsTab:AddColorpicker("Grabber Knob Color", Theme.Grabber, function(color)
+		Theme.Grabber = color
+		Library:NotifyThemeChanged()
+	end)
+	ColorsTab:AddColorpicker("Text Color", Theme.Text, function(color)
+		Theme.Text = color
+		Library:NotifyThemeChanged()
+	end)
 
 	local SizesTab = StyleWin:AddCategory("Style")
 	SizesTab:AddLabel("Boyut ve Yazı Tipi Düzenleyici")
@@ -3548,29 +4169,34 @@ function Library:CreateStyleEditorWindow()
 	SizesTab:AddDropdown("Font Type", {"RobotoMono", "Code", "SourceSans", "Gotham", "Ubuntu"}, "RobotoMono", function(fontName)
 		if Enum.Font[fontName] then
 			Theme.Font = Enum.Font[fontName]
+			Library:NotifyThemeChanged()
 		end
 	end)
 
 	SizesTab:AddSlider("Font Size", 10, 18, Theme.TextSize or 12, function(v)
 		Theme.TextSize = v
+		Library:NotifyThemeChanged()
 	end)
 
 	SizesTab:AddSlider("Item Spacing", 0, 12, Theme.ItemSpacing or 4, function(v)
 		Theme.ItemSpacing = v
+		Library:NotifyThemeChanged()
 	end)
 
 	SizesTab:AddSlider("Indent Spacing", 4, 24, Theme.IndentSpacing or 12, function(v)
 		Theme.IndentSpacing = v
+		Library:NotifyThemeChanged()
 	end)
 
 	SizesTab:AddSlider("Slider Grab Min Size", 4, 20, Theme.GrabberWidth or 10, function(v)
 		Theme.GrabberWidth = v
+		Library:NotifyThemeChanged()
 	end)
 
 	return StyleWin
 end
 
--- Keybind List Tool Window
+-- Keybind List Tool Window (Canlı Yenilenen ve Aynı İsimli Keybind'ları Numaralandıran)
 function Library:CreateKeybindListWindow()
 	local KeybindWin = Library:CreateWindow("Keybind List", UDim2.new(0, 250, 0, 150), UDim2.new(0, 280, 0, 300))
 	local MainTab = KeybindWin:AddCategory("Keybinds")
@@ -3583,10 +4209,22 @@ function Library:CreateKeybindListWindow()
 			return
 		end
 
+		local nameCounts = {}
+		for _, kb in ipairs(Library.RegisteredKeybinds) do
+			nameCounts[kb.Name] = (nameCounts[kb.Name] or 0) + 1
+		end
+
+		local nameTracker = {}
 		for _, kb in ipairs(Library.RegisteredKeybinds) do
 			local currentKey = kb.GetKey()
+			local displayName = kb.Name
+			if nameCounts[kb.Name] > 1 then
+				nameTracker[kb.Name] = (nameTracker[kb.Name] or 0) + 1
+				displayName = kb.Name .. " (" .. nameTracker[kb.Name] .. ")"
+			end
+
 			local row = MainTab:AddRow(22, 6)
-			row:AddText(kb.Name, 0.5)
+			row:AddText(displayName, 0.5)
 			row:AddButton(currentKey and currentKey.Name or "None", function()
 				Library:Notify("Keybind", "Yeni tuşa basın...", 3, "info")
 				local conn
@@ -3605,6 +4243,15 @@ function Library:CreateKeybindListWindow()
 		end
 	end
 
+	local listener = refresh
+	table.insert(Library.KeybindChangedCallbacks, listener)
+
+	local baseDestroy = KeybindWin.Destroy
+	KeybindWin.Destroy = function(self)
+		removeCallback(Library.KeybindChangedCallbacks, listener)
+		baseDestroy(self)
+	end
+
 	refresh()
 	return KeybindWin
 end
@@ -3617,6 +4264,9 @@ function Library:Unload()
 		pcall(function() conn:Disconnect() end)
 	end
 	Library.Connections = {}
+	Library.KeybindChangedCallbacks = {}
+	Library.ConfigChangedCallbacks = {}
+	Library.ThemeChangedCallbacks = {}
 
 	for i = #Library.Windows, 1, -1 do
 		local win = Library.Windows[i]
@@ -3632,8 +4282,13 @@ function Library:Unload()
 	closeActivePopup()
 
 	local parent = getParentGui()
-	local gui = parent:FindFirstChild("ImGuiLibrary")
-	if gui then gui:Destroy() end
+	if parent then
+		for _, child in ipairs(parent:GetChildren()) do
+			if child.Name == "ImGuiLibrary" then
+				pcall(function() child:Destroy() end)
+			end
+		end
+	end
 end
 
 return Library
